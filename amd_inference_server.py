@@ -63,13 +63,18 @@ async def process_image_with_pollinations(image_data: bytes, filename: str) -> d
                     "status": "success"
                 }
             else:
+                # Log the actual error for debugging
+                error_text = await response.text()
+                print(f"Pollinations API error: Status {response.status_code}, Response: {error_text}")
                 return {
                     "image": filename,
-                    "error": f"API request failed with status {response.status_code}",
+                    "error": f"API request failed with status {response.status_code}: {error_text}",
                     "status": "error"
                 }
                 
     except Exception as e:
+        # Log the exception for debugging
+        print(f"Exception in process_image_with_pollinations: {e}")
         return {
             "image": filename,
             "error": str(e),
