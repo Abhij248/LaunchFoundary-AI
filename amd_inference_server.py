@@ -294,6 +294,19 @@ async def generate_buildspec(
             elif isinstance(payload, dict):
                 profile = payload
 
+        # If we still don't have a profile, check if it's in a different structure
+        if not profile:
+            # Check if payload is a direct business_input
+            if isinstance(payload, dict) and "name" in payload and "location" in payload:
+                profile = payload
+            # Check if payload has a nested structure that might contain business_input
+            elif isinstance(payload, dict):
+                # Look for business_input in various possible locations
+                for key in ["business_input", "payload", "data"]:
+                    if key in payload and isinstance(payload[key], dict):
+                        profile = payload[key]
+                        break
+
         logger.debug(f"Extracted business profile: {profile}")
 
         business_details = (
