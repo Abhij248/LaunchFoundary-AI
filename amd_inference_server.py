@@ -229,10 +229,18 @@ async def generate_buildspec(
             {},
         )
     else:
-        profile = payload.get(
-            "business_input",
-            {},
-        )
+        # Check if payload contains business_input directly
+        if "business_input" in payload:
+            profile = payload["business_input"]
+        else:
+            # Fallback to extracting from payload structure
+            profile = payload.get("business_input", {})
+            if not profile:
+                # Try to extract from nested structure
+                for key in ["business_input", "payload"]:
+                    if key in payload and isinstance(payload[key], dict):
+                        profile = payload[key]
+                        break
 
     business_details = (
         profile.get(

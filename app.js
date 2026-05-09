@@ -1597,13 +1597,13 @@ document.querySelector("#runAmdAssets").addEventListener("click", async () => {
 
     if (!files.length) {
       // No files uploaded, just process business details
-      extractedPayloads.push(await requestAmdBuildSpec(endpoint, profile, baseBusinessDetails, null));
+      extractedPayloads.push(await requestAmdBuildSpec("/generate-buildspec", profile, baseBusinessDetails, null));
     } else {
       // Process uploaded files
       for (let index = 0; index < files.length; index += 1) {
         const file = files[index];
         status.textContent = `Analyzing image ${index + 1} of ${files.length} with pollinations.ai...`;
-        extractedPayloads.push(await requestAmdBuildSpec(endpoint, profile, baseBusinessDetails, file));
+        extractedPayloads.push(await requestAmdBuildSpec("/generate-buildspec", profile, baseBusinessDetails, file));
       }
     }
 
