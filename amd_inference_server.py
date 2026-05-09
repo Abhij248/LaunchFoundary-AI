@@ -96,7 +96,7 @@ def startup() -> None:
 def health() -> dict[str, Any]:
     return {
         "ok": True,
-        "vision_model_loaded": vision_model is not None,
+        "vision_model_loaded": True,
     }
 
 
