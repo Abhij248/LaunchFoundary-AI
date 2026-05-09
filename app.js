@@ -1597,13 +1597,13 @@ document.querySelector("#runAmdAssets").addEventListener("click", async () => {
 
     if (!files.length) {
       // No files uploaded, just process business details
-      extractedPayloads.push(await requestAmdBuildSpec("/generate-buildspec", profile, baseBusinessDetails, null));
+      extractedPayloads.push(await requestAmdBuildSpec(endpoint, profile, baseBusinessDetails, null));
     } else {
       // Process uploaded files
       for (let index = 0; index < files.length; index += 1) {
         const file = files[index];
         status.textContent = `Analyzing image ${index + 1} of ${files.length} with pollinations.ai...`;
-        extractedPayloads.push(await requestAmdBuildSpec("/generate-buildspec", profile, baseBusinessDetails, file));
+        extractedPayloads.push(await requestAmdBuildSpec(endpoint, profile, baseBusinessDetails, file));
       }
     }
 
@@ -1614,7 +1614,7 @@ document.querySelector("#runAmdAssets").addEventListener("click", async () => {
     status.textContent =
       [
         `Local processing failed: ${error.message}`,
-        `Endpoint: ${endpoint || "/generate-buildspec"}`,
+        `Endpoint: ${"/generate-buildspec"}`,
         `Asset count: ${files.length}`,
         "Check that the server is running and the pollinations.ai API is accessible.",
       ].join("\n\n");
@@ -1871,12 +1871,10 @@ async function requestAmdBuildSpec(
         },
 
         body: JSON.stringify({
-          payload: {
-            business_input: {
-              ...profile,
-              details:
-                businessDetails,
-            },
+          business_input: {
+            ...profile,
+            details:
+              businessDetails,
           },
         }),
       },

@@ -222,25 +222,17 @@ async def generate_buildspec(
     files: list[UploadFile] = File(default=None)
 ) -> dict[str, Any]:
 
-    # Handle both direct payload and nested payload structure
-    if "payload" in payload:
-        profile = payload["payload"].get(
-            "business_input",
-            {},
-        )
-    else:
-        # Check if payload contains business_input directly
-        if "business_input" in payload:
-            profile = payload["business_input"]
-        else:
-            # Fallback to extracting from payload structure
-            profile = payload.get("business_input", {})
-            if not profile:
-                # Try to extract from nested structure
-                for key in ["business_input", "payload"]:
-                    if key in payload and isinstance(payload[key], dict):
-                        profile = payload[key]
-                        break
+    # Handle the payload structure properly
+    # The payload should be a dictionary with business_input as a key
+    profile = payload.get("business_input", {})
+    
+    # If business_input is not directly in payload, try to find it in nested structure
+    if not profile:
+        # Try to find business_input in nested structure
+        for key in ["payload", "business_input"]:
+            if key in payload and isinstance(payload[key], dict):
+                profile = payload[key]
+                break
 
     business_details = (
         profile.get(
