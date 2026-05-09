@@ -5,7 +5,7 @@ import json
 import re
 from typing import Any, TypeVar
 
-import ollama
+import httpx
 from pydantic import BaseModel, ValidationError
 
 
@@ -19,12 +19,14 @@ class ModelJsonPlanner:
 
     def __init__(
         self,
-        model_name: str = "gemma3:1b",
+        model_name: str = "qwen:32b",
     ) -> None:
 
         self.model_name = (
             model_name
         )
+        # Pollinations API endpoint
+        self.pollinations_url = "https://pollinations.ai/api/generate"
 
     def generate_model(
         self,
@@ -102,26 +104,26 @@ class ModelJsonPlanner:
         prompt: str,
         max_new_tokens: int = 500,
     ) -> str:
-
-        response = ollama.chat(
-
-            model=self.model_name,
-
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
-
-            options={
-                "temperature": 0,
-                "num_predict": max_new_tokens,
-                "stop": ["\n\n"],
-            },
-        )
-
-        return response["message"]["content"]
+        # Using Pollinations API instead of Ollama
+        try:
+            async with httpx.AsyncClient() as client:
+                response = client.post(
+                    self.pollinations_url,
+                    json={
+                        "prompt": prompt,
+                        "model": self.model_name,
+                        "max_new_tokens": max_new_tokens,
+                        "temperature": 0,
+                    },
+                    timeout=60.0
+                )
+                response.raise_for_status()
+                result = response.json()
+                return result.get("response", "")
+        except Exception as e:
+            # Fallback to a default response if API fails
+            print(f"Pollinations API error: {e}")
+            return "Default response due to API failure"
 
 
 def parse_json_object(
