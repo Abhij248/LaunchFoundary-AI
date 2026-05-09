@@ -233,10 +233,9 @@ async def generate_buildspec(
             profile = payload["payload"].get("business_input", {})
         elif "business_input" in payload and isinstance(payload["business_input"], dict):
             profile = payload["business_input"]
-
-    # If we still don't have a profile, check if payload is the business_input directly
-    if not profile and isinstance(payload, dict):
-        profile = payload
+        # Also check if payload itself is the business_input
+        elif isinstance(payload, dict):
+            profile = payload
 
     business_details = (
         profile.get(
