@@ -1,0 +1,243 @@
+from __future__ import annotations
+
+import json
+import re
+import tempfile
+from pathlib import Path
+from typing import Any
+
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
+from agentic_graph import run_agent_graph
+from agentic_models import AssetExtraction
+from agentic_planner import ModelJsonPlanner
+# from amd_vision_extract import extract_asset_info, load_model, summarize_for_buildspec
+from buildspec_planner import generate_build_spec
+
+
+app = FastAPI(title="LaunchFoundry AMD Inference API")
+APP_DIR = Path(__file__).resolve().parent
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+vision_model = None
+vision_processor = None
+json_planner = None
+
+app.mount("/static", StaticFiles(directory=APP_DIR), name="static")
+
+
+@app.on_event("startup")
+def startup() -> None:
+
+    global vision_model
+    global vision_processor
+    global json_planner
+
+    print(
+        "Vision extraction disabled."
+    )
+
+    vision_model = None
+    vision_processor = None
+
+    json_planner = (
+        ModelJsonPlanner(
+            "phi3:mini"
+        )
+    )
+
+    print(
+        "Ollama planner ready."
+    )
+
+@app.get("/health")
+def health() -> dict[str, Any]:
+    return {
+        "ok": True,
+        "vision_model_loaded": vision_model is not None,
+    }
+
+
+@app.get("/")
+def frontend() -> FileResponse:
+    return FileResponse(APP_DIR / "index.html")
+
+
+@app.get("/app.js")
+def frontend_js() -> FileResponse:
+    return FileResponse(APP_DIR / "app.js", media_type="application/javascript")
+
+
+@app.get("/styles.css")
+def frontend_css() -> FileResponse:
+    return FileResponse(APP_DIR / "styles.css", media_type="text/css")
+
+
+@app.get("/jupyter-preview")
+def frontend_preview() -> FileResponse:
+    return FileResponse(APP_DIR / "jupyter_preview.html")
+
+
+def normalize_asset_extraction_payload(item: dict[str, Any]) -> dict[str, Any]:
+    parsed = dict((item.get("parsed", {}) or {}))
+    info = dict((parsed.get("extracted_business_info", {}) or {}))
+    info["services_or_items"] = normalize_string_list(info.get("services_or_items"))
+    info["offers"] = normalize_string_list(info.get("offers"))
+    info["prices"] = normalize_prices(info.get("prices"))
+    parsed["business_signals"] = normalize_string_list(parsed.get("business_signals"))
+    parsed["recommended_pages"] = normalize_string_list(parsed.get("recommended_pages"))
+    parsed["recommended_features"] = normalize_string_list(parsed.get("recommended_features"))
+    parsed["trust_or_compliance_notes"] = normalize_string_list(parsed.get("trust_or_compliance_notes"))
+    parsed["visual_brand_cues"] = normalize_string_list(parsed.get("visual_brand_cues"))
+    parsed["extracted_business_info"] = info
+    return {
+        "image": item.get("image", ""),
+        **parsed,
+    }
+
+
+def normalize_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    normalized: list[str] = []
+    for entry in value:
+        if isinstance(entry, str):
+            text = entry.strip()
+            if text:
+                normalized.append(text)
+        elif isinstance(entry, (int, float)):
+            normalized.append(str(entry))
+    return normalized
+
+
+def normalize_prices(value: Any) -> list[str | float | int | list[float | int]]:
+    if not isinstance(value, list):
+        return []
+
+    normalized: list[str | float | int | list[float | int]] = []
+    for entry in value:
+        parsed = normalize_price_entry(entry)
+        if parsed is None:
+            continue
+        normalized.append(parsed)
+    return normalized
+
+
+def normalize_price_entry(value: Any) -> str | float | int | list[float | int] | None:
+    if isinstance(value, (int, float)):
+        return value
+
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        numeric_values = extract_numeric_values(text)
+        if not numeric_values:
+            return text
+        if len(numeric_values) == 1:
+            return numeric_values[0]
+        return numeric_values
+
+    if isinstance(value, list):
+        numeric_values: list[float | int] = []
+        for item in value:
+            if isinstance(item, (int, float)):
+                numeric_values.append(item)
+            elif isinstance(item, str):
+                numeric_values.extend(extract_numeric_values(item))
+        if not numeric_values:
+            return None
+        if len(numeric_values) == 1:
+            return numeric_values[0]
+        return numeric_values
+
+    return None
+
+
+def extract_numeric_values(text: str) -> list[float | int]:
+    matches = re.findall(r"\d+(?:\.\d+)?", text)
+    values: list[float | int] = []
+    for match in matches:
+        number = float(match) if "." in match else int(match)
+        values.append(number)
+    return values
+
+
+
+@app.post("/generate-buildspec")
+async def generate_buildspec(
+    payload: dict,
+) -> dict[str, Any]:
+
+    profile = payload.get(
+        "business_input",
+        {},
+    )
+
+    business_details = (
+        profile.get(
+            "details",
+            "",
+        )
+    )
+
+    extractions = []
+
+    asset_signals = ""
+
+    enriched_details = (
+        "\n\n".join(
+            part
+            for part in [
+                business_details,
+                asset_signals,
+            ]
+            if part.strip()
+        )
+    )
+
+    build_spec = generate_build_spec(
+        profile,
+        enriched_details,
+    )
+
+    validated_extractions = []
+
+    agent_state = run_agent_graph(
+        {
+            "business_input": profile,
+
+            "uploaded_asset_paths": [],
+
+            "asset_extractions": [],
+        },
+
+        planner=json_planner,
+    )
+
+    return {
+        "source":
+            "local-qwen-agent-system",
+
+        "assetSignals":
+            asset_signals,
+
+        "assetExtractions":
+            extractions,
+
+        "buildSpec":
+            build_spec,
+
+        "graphExecution":
+            agent_state,
+    }
