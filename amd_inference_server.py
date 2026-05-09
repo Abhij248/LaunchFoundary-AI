@@ -229,10 +229,10 @@ async def generate_buildspec(
     # If business_input is not directly in payload, try to find it in nested structure
     if not profile:
         # Try to find business_input in nested structure
-        for key in ["payload", "business_input"]:
-            if key in payload and isinstance(payload[key], dict):
-                profile = payload[key]
-                break
+        if "payload" in payload and isinstance(payload["payload"], dict):
+            profile = payload["payload"].get("business_input", {})
+        elif "business_input" in payload and isinstance(payload["business_input"], dict):
+            profile = payload["business_input"]
 
     # If we still don't have a profile, check if payload is the business_input directly
     if not profile and isinstance(payload, dict):
