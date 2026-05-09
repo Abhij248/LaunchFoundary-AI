@@ -1857,6 +1857,7 @@ async function requestAmdBuildSpec(
   endpoint,
   profile,
   businessDetails,
+  file = null
 ) {
 
   const response =
