@@ -1589,38 +1589,36 @@ document.querySelector("#runAmdAssets").addEventListener("click", async () => {
   };
 
   try {
-    //status.textContent = "Resolving AMD API endpoint from the Jupyter session...";
-    //const apiUrl = await resolveAmdApiUrl(rawApiValue);
-    //apiInput.value = apiUrl;
-    //status.textContent = "Sending business details and uploaded images to AMD Developer Cloud...";
-    status.textContent ="Running local agentic generation...";
-    //const endpoint = buildApiEndpoint(apiUrl, "generate-buildspec");
+    // For local development, we'll use the local endpoint
+    status.textContent = "Processing with local pollinations.ai vision model...";
     const endpoint = "/generate-buildspec";
     const baseBusinessDetails = document.querySelector("#businessDetails").value;
     const extractedPayloads = [];
 
     if (!files.length) {
+      // No files uploaded, just process business details
       extractedPayloads.push(await requestAmdBuildSpec(endpoint, profile, baseBusinessDetails, null));
     } else {
+      // Process uploaded files
       for (let index = 0; index < files.length; index += 1) {
         const file = files[index];
-        status.textContent = `Analyzing image ${index + 1} of ${files.length} on AMD GPU...`;
+        status.textContent = `Analyzing image ${index + 1} of ${files.length} with pollinations.ai...`;
         extractedPayloads.push(await requestAmdBuildSpec(endpoint, profile, baseBusinessDetails, file));
       }
     }
 
     const payload = mergeAmdPayloads(profile, baseBusinessDetails, extractedPayloads);
-    await applyAmdPayload(payload, "AMD Developer Cloud import");
+    await applyAmdPayload(payload, "Local pollinations.ai vision model");
     showPanel("reasoning");
   } catch (error) {
     status.textContent =
       [
-        `AMD inference failed: ${error.message}`,
-        `Endpoint: ${document.querySelector("#amdApiUrl").value.trim() || "(empty)"}`,
+        `Local processing failed: ${error.message}`,
+        `Endpoint: ${endpoint || "/generate-buildspec"}`,
         `Asset count: ${files.length}`,
-        "Fallback: use Extract Asset Info for local demo extraction, or check that the AMD server is running and reachable.",
+        "Check that the server is running and the pollinations.ai API is accessible.",
       ].join("\n\n");
-    console.error("AMD inference request failed", { apiUrl: document.querySelector("#amdApiUrl").value.trim(), error });
+    console.error("Local processing failed", { error });
   }
 });
 

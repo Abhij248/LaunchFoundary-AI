@@ -209,6 +209,7 @@ def extract_numeric_values(text: str) -> list[float | int]:
 @app.post("/generate-buildspec")
 async def generate_buildspec(
     payload: dict,
+    files: list[UploadFile] = File(default=None)
 ) -> dict[str, Any]:
 
     profile = payload.get(
@@ -227,9 +228,29 @@ async def generate_buildspec(
     extractions = []
     asset_signals = ""
     
-    # For now, we'll maintain the original structure but add the capability
-    # In a real implementation, you would process uploaded files here
-    
+    # Process uploaded files if any
+    if files:
+        for file in files:
+            try:
+                # Read file content
+                image_data = await file.read()
+                
+                # Process with pollinations.ai
+                result = await process_image_with_pollinations(image_data, file.filename)
+                
+                if result["status"] == "success":
+                    extractions.append(result)
+                    # Add asset signals to the overall signals
+                    parsed = result.get("parsed", {})
+                    business_signals = parsed.get("business_signals", [])
+                    if business_signals:
+                        asset_signals += f"File: {file.filename}\n"
+                        asset_signals += f"Signals: {', '.join(business_signals[:5])}\n\n"
+                        
+            except Exception as e:
+                print(f"Error processing file {file.filename}: {e}")
+                # Continue processing other files even if one fails
+
     enriched_details = (
         "\n\n".join(
             part
@@ -252,9 +273,9 @@ async def generate_buildspec(
         {
             "business_input": profile,
 
-            "uploaded_asset_paths": [],
+            "uploaded_asset_paths": [file.filename for file in files] if files else [],
 
-            "asset_extractions": [],
+            "asset_extractions": extractions,
         },
 
         planner=json_planner,
