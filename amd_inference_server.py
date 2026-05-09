@@ -227,13 +227,8 @@ async def generate_buildspec(
     extractions = []
     asset_signals = ""
     
-    # This would be called when files are actually uploaded
-    # For now, we'll simulate the extraction process
-    # In a real implementation, you'd process the uploaded files here
-    
-    # Simulate asset processing with pollinations.ai
-    # This is where you'd make calls to the pollinations.ai API
-    # For demonstration, we'll leave this as a placeholder
+    # For now, we'll maintain the original structure but add the capability
+    # In a real implementation, you would process uploaded files here
     
     enriched_details = (
         "\n\n".join(
