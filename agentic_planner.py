@@ -19,7 +19,7 @@ class ModelJsonPlanner:
 
     def __init__(
         self,
-        model_name: str = "qwen:32b",
+        model_name: str = "phi3:mini",
     ) -> None:
 
         self.model_name = (
