@@ -222,10 +222,17 @@ async def generate_buildspec(
     files: list[UploadFile] = File(default=None)
 ) -> dict[str, Any]:
 
-    profile = payload.get(
-        "business_input",
-        {},
-    )
+    # Handle both direct payload and nested payload structure
+    if "payload" in payload:
+        profile = payload["payload"].get(
+            "business_input",
+            {},
+        )
+    else:
+        profile = payload.get(
+            "business_input",
+            {},
+        )
 
     business_details = (
         profile.get(
