@@ -106,7 +106,7 @@ class ModelJsonPlanner:
     ) -> str:
         # Using Pollinations API instead of Ollama
         try:
-            async with httpx.AsyncClient() as client:
+            with httpx.Client() as client:
                 response = client.post(
                     self.pollinations_url,
                     json={
