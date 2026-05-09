@@ -56,7 +56,12 @@ async def process_image_with_pollinations(image_data: bytes, filename: str) -> d
             
             if response.status_code == 200:
                 # Parse the response
-                result = response.json()
+                try:
+                    result = response.json()
+                except Exception:
+                    # If JSON parsing fails, treat as text response
+                    result = {"text_response": await response.text()}
+                
                 return {
                     "image": filename,
                     "parsed": result,
