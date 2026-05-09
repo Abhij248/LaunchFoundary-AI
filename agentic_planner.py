@@ -107,6 +107,7 @@ class ModelJsonPlanner:
         # Using Pollinations API instead of Ollama
         try:
             with httpx.Client() as client:
+                # For better compatibility with Pollinations API, we'll use a more standard approach
                 response = client.post(
                     self.pollinations_url,
                     json={
@@ -119,7 +120,10 @@ class ModelJsonPlanner:
                 )
                 response.raise_for_status()
                 result = response.json()
-                return result.get("response", "")
+                # Handle different response formats from Pollinations
+                if isinstance(result, dict):
+                    return result.get("response", result.get("text", ""))
+                return str(result)
         except Exception as e:
             # Fallback to a default response if API fails
             print(f"Pollinations API error: {e}")
