@@ -1871,10 +1871,12 @@ async function requestAmdBuildSpec(
         },
 
         body: JSON.stringify({
-          business_input: {
-            ...profile,
-            details:
-              businessDetails,
+          payload: {
+            business_input: {
+              ...profile,
+              details:
+                businessDetails,
+            },
           },
         }),
       },

@@ -234,6 +234,10 @@ async def generate_buildspec(
                 profile = payload[key]
                 break
 
+    # If we still don't have a profile, check if payload is the business_input directly
+    if not profile and isinstance(payload, dict):
+        profile = payload
+
     business_details = (
         profile.get(
             "details",
