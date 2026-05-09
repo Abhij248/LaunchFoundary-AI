@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import tempfile
 from pathlib import Path
@@ -17,6 +18,17 @@ from agentic_models import AssetExtraction
 from agentic_planner import ModelJsonPlanner
 from buildspec_planner import generate_build_spec
 
+
+# Configure logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('debug.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="LaunchFoundry AMD Inference API")
 APP_DIR = Path(__file__).resolve().parent
@@ -39,6 +51,7 @@ app.mount("/static", StaticFiles(directory=APP_DIR), name="static")
 async def process_image_with_pollinations(image_data: bytes, filename: str) -> dict[str, Any]:
     """Process an image using pollinations.ai vision model."""
     try:
+        logger.debug(f"Processing image: {filename}")
         # Prepare the request to pollinations.ai
         # Note: This is a simplified version - you may need to adjust based on the actual API requirements
         async with httpx.AsyncClient() as client:
@@ -48,19 +61,24 @@ async def process_image_with_pollinations(image_data: bytes, filename: str) -> d
             }
             
             # Send request to pollinations.ai
+            logger.debug(f"Sending request to pollinations API for {filename}")
             response = await client.post(
                 POLLINATIONS_VISION_URL,
                 files=files,
                 timeout=30.0
             )
             
+            logger.debug(f"Response status for {filename}: {response.status_code}")
+            
             if response.status_code == 200:
                 # Parse the response
                 try:
                     result = response.json()
-                except Exception:
+                    logger.debug(f"Successfully parsed JSON response for {filename}")
+                except Exception as e:
                     # If JSON parsing fails, treat as text response
                     result = {"text_response": await response.text()}
+                    logger.warning(f"JSON parsing failed for {filename}, using text response: {e}")
                 
                 return {
                     "image": filename,
@@ -70,7 +88,7 @@ async def process_image_with_pollinations(image_data: bytes, filename: str) -> d
             else:
                 # Log the actual error for debugging
                 error_text = await response.text()
-                print(f"Pollinations API error: Status {response.status_code}, Response: {error_text}")
+                logger.error(f"Pollinations API error for {filename}: Status {response.status_code}, Response: {error_text}")
                 return {
                     "image": filename,
                     "error": f"API request failed with status {response.status_code}: {error_text}",
@@ -79,7 +97,7 @@ async def process_image_with_pollinations(image_data: bytes, filename: str) -> d
                 
     except Exception as e:
         # Log the exception for debugging
-        print(f"Exception in process_image_with_pollinations: {e}")
+        logger.exception(f"Exception in process_image_with_pollinations for {filename}: {e}")
         return {
             "image": filename,
             "error": str(e),
@@ -89,7 +107,7 @@ async def process_image_with_pollinations(image_data: bytes, filename: str) -> d
 
 @app.on_event("startup")
 def startup() -> None:
-
+    logger.info("Starting up AMD inference server")
     global json_planner
 
     json_planner = (
@@ -98,12 +116,14 @@ def startup() -> None:
         )
     )
 
-    print(
+    logger.info(
         "Pollinations.ai vision model ready."
     )
 
+
 @app.get("/health")
 def health() -> dict[str, Any]:
+    logger.debug("Health check requested")
     return {
         "ok": True,
         "vision_model_loaded": True,
@@ -112,108 +132,141 @@ def health() -> dict[str, Any]:
 
 @app.get("/")
 def frontend() -> FileResponse:
+    logger.debug("Frontend requested")
     return FileResponse(APP_DIR / "index.html")
 
 
 @app.get("/app.js")
 def frontend_js() -> FileResponse:
+    logger.debug("App.js requested")
     return FileResponse(APP_DIR / "app.js", media_type="application/javascript")
 
 
 @app.get("/styles.css")
 def frontend_css() -> FileResponse:
+    logger.debug("Styles.css requested")
     return FileResponse(APP_DIR / "styles.css", media_type="text/css")
 
 
 @app.get("/jupyter-preview")
 def frontend_preview() -> FileResponse:
+    logger.debug("Jupyter preview requested")
     return FileResponse(APP_DIR / "jupyter_preview.html")
 
 
 def normalize_asset_extraction_payload(item: dict[str, Any]) -> dict[str, Any]:
-    parsed = dict((item.get("parsed", {}) or {}))
-    info = dict((parsed.get("extracted_business_info", {}) or {}))
-    info["services_or_items"] = normalize_string_list(info.get("services_or_items"))
-    info["offers"] = normalize_string_list(info.get("offers"))
-    info["prices"] = normalize_prices(info.get("prices"))
-    parsed["business_signals"] = normalize_string_list(parsed.get("business_signals"))
-    parsed["recommended_pages"] = normalize_string_list(parsed.get("recommended_pages"))
-    parsed["recommended_features"] = normalize_string_list(parsed.get("recommended_features"))
-    parsed["trust_or_compliance_notes"] = normalize_string_list(parsed.get("trust_or_compliance_notes"))
-    parsed["visual_brand_cues"] = normalize_string_list(parsed.get("visual_brand_cues"))
-    parsed["extracted_business_info"] = info
-    return {
-        "image": item.get("image", ""),
-        **parsed,
-    }
+    logger.debug(f"Normalizing asset extraction payload: {item.get('image', 'unknown')}")
+    try:
+        parsed = dict((item.get("parsed", {}) or {}))
+        info = dict((parsed.get("extracted_business_info", {}) or {}))
+        info["services_or_items"] = normalize_string_list(info.get("services_or_items"))
+        info["offers"] = normalize_string_list(info.get("offers"))
+        info["prices"] = normalize_prices(info.get("prices"))
+        parsed["business_signals"] = normalize_string_list(parsed.get("business_signals"))
+        parsed["recommended_pages"] = normalize_string_list(parsed.get("recommended_pages"))
+        parsed["recommended_features"] = normalize_string_list(parsed.get("recommended_features"))
+        parsed["trust_or_compliance_notes"] = normalize_string_list(parsed.get("trust_or_compliance_notes"))
+        parsed["visual_brand_cues"] = normalize_string_list(parsed.get("visual_brand_cues"))
+        parsed["extracted_business_info"] = info
+        result = {
+            "image": item.get("image", ""),
+            **parsed,
+        }
+        logger.debug(f"Normalized payload for {item.get('image', 'unknown')}: {result}")
+        return result
+    except Exception as e:
+        logger.exception(f"Error normalizing asset extraction payload: {e}")
+        return item
 
 
 def normalize_string_list(value: Any) -> list[str]:
-    if not isinstance(value, list):
+    logger.debug(f"Normalizing string list: {value}")
+    try:
+        if not isinstance(value, list):
+            return []
+        normalized: list[str] = []
+        for entry in value:
+            if isinstance(entry, str):
+                text = entry.strip()
+                if text:
+                    normalized.append(text)
+            elif isinstance(entry, (int, float)):
+                normalized.append(str(entry))
+        logger.debug(f"Normalized string list: {normalized}")
+        return normalized
+    except Exception as e:
+        logger.exception(f"Error normalizing string list: {e}")
         return []
-    normalized: list[str] = []
-    for entry in value:
-        if isinstance(entry, str):
-            text = entry.strip()
-            if text:
-                normalized.append(text)
-        elif isinstance(entry, (int, float)):
-            normalized.append(str(entry))
-    return normalized
 
 
 def normalize_prices(value: Any) -> list[str | float | int | list[float | int]]:
-    if not isinstance(value, list):
-        return []
+    logger.debug(f"Normalizing prices: {value}")
+    try:
+        if not isinstance(value, list):
+            return []
 
-    normalized: list[str | float | int | list[float | int]] = []
-    for entry in value:
-        parsed = normalize_price_entry(entry)
-        if parsed is None:
-            continue
-        normalized.append(parsed)
-    return normalized
+        normalized: list[str | float | int | list[float | int]] = []
+        for entry in value:
+            parsed = normalize_price_entry(entry)
+            if parsed is None:
+                continue
+            normalized.append(parsed)
+        logger.debug(f"Normalized prices: {normalized}")
+        return normalized
+    except Exception as e:
+        logger.exception(f"Error normalizing prices: {e}")
+        return []
 
 
 def normalize_price_entry(value: Any) -> str | float | int | list[float | int] | None:
-    if isinstance(value, (int, float)):
-        return value
+    logger.debug(f"Normalizing price entry: {value}")
+    try:
+        if isinstance(value, (int, float)):
+            return value
 
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return None
-        numeric_values = extract_numeric_values(text)
-        if not numeric_values:
-            return text
-        if len(numeric_values) == 1:
-            return numeric_values[0]
-        return numeric_values
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            numeric_values = extract_numeric_values(text)
+            if not numeric_values:
+                return text
+            if len(numeric_values) == 1:
+                return numeric_values[0]
+            return numeric_values
 
-    if isinstance(value, list):
-        numeric_values: list[float | int] = []
-        for item in value:
-            if isinstance(item, (int, float)):
-                numeric_values.append(item)
-            elif isinstance(item, str):
-                numeric_values.extend(extract_numeric_values(item))
-        if not numeric_values:
-            return None
-        if len(numeric_values) == 1:
-            return numeric_values[0]
-        return numeric_values
+        if isinstance(value, list):
+            numeric_values: list[float | int] = []
+            for item in value:
+                if isinstance(item, (int, float)):
+                    numeric_values.append(item)
+                elif isinstance(item, str):
+                    numeric_values.extend(extract_numeric_values(item))
+            if not numeric_values:
+                return None
+            if len(numeric_values) == 1:
+                return numeric_values[0]
+            return numeric_values
 
-    return None
+        return None
+    except Exception as e:
+        logger.exception(f"Error normalizing price entry: {e}")
+        return None
 
 
 def extract_numeric_values(text: str) -> list[float | int]:
-    matches = re.findall(r"\d+(?:\.\d+)?", text)
-    values: list[float | int] = []
-    for match in matches:
-        number = float(match) if "." in match else int(match)
-        values.append(number)
-    return values
-
+    logger.debug(f"Extracting numeric values from: {text}")
+    try:
+        matches = re.findall(r"\d+(?:\.\d+)?", text)
+        values: list[float | int] = []
+        for match in matches:
+            number = float(match) if "." in match else int(match)
+            values.append(number)
+        logger.debug(f"Extracted numeric values: {values}")
+        return values
+    except Exception as e:
+        logger.exception(f"Error extracting numeric values: {e}")
+        return []
 
 
 @app.post("/generate-buildspec")
@@ -221,99 +274,119 @@ async def generate_buildspec(
     payload: dict,
     files: list[UploadFile] = File(default=None)
 ) -> dict[str, Any]:
+    logger.info("Received generate_buildspec request")
+    logger.debug(f"Request payload: {payload}")
+    logger.debug(f"Uploaded files: {len(files) if files else 0}")
 
-    # Handle the payload structure properly
-    # The payload should be a dictionary with business_input as a key
-    profile = payload.get("business_input", {})
-    
-    # If business_input is not directly in payload, try to find it in nested structure
-    if not profile:
-        # Try to find business_input in nested structure
-        if "payload" in payload and isinstance(payload["payload"], dict):
-            profile = payload["payload"].get("business_input", {})
-        elif "business_input" in payload and isinstance(payload["business_input"], dict):
-            profile = payload["business_input"]
-        # Also check if payload itself is the business_input
-        elif isinstance(payload, dict):
-            profile = payload
+    try:
+        # Handle the payload structure properly
+        # The payload should be a dictionary with business_input as a key
+        profile = payload.get("business_input", {})
+        
+        # If business_input is not directly in payload, try to find it in nested structure
+        if not profile:
+            # Try to find business_input in nested structure
+            if "payload" in payload and isinstance(payload["payload"], dict):
+                profile = payload["payload"].get("business_input", {})
+            elif "business_input" in payload and isinstance(payload["business_input"], dict):
+                profile = payload["business_input"]
+            # Also check if payload itself is the business_input
+            elif isinstance(payload, dict):
+                profile = payload
 
-    business_details = (
-        profile.get(
-            "details",
-            "",
+        logger.debug(f"Extracted business profile: {profile}")
+
+        business_details = (
+            profile.get(
+                "details",
+                "",
+            )
         )
-    )
 
-    # Process uploaded assets with pollinations.ai vision model
-    extractions = []
-    asset_signals = ""
-    
-    # Process uploaded files if any
-    if files:
-        for file in files:
-            try:
-                # Read file content
-                image_data = await file.read()
-                
-                # Process with pollinations.ai
-                result = await process_image_with_pollinations(image_data, file.filename)
-                
-                if result["status"] == "success":
-                    extractions.append(result)
-                    # Add asset signals to the overall signals
-                    parsed = result.get("parsed", {})
-                    business_signals = parsed.get("business_signals", [])
-                    if business_signals:
-                        asset_signals += f"File: {file.filename}\n"
-                        asset_signals += f"Signals: {', '.join(business_signals[:5])}\n\n"
-                        
-            except Exception as e:
-                print(f"Error processing file {file.filename}: {e}")
-                # Continue processing other files even if one fails
+        # Process uploaded assets with pollinations.ai vision model
+        extractions = []
+        asset_signals = ""
+        
+        # Process uploaded files if any
+        if files:
+            logger.info(f"Processing {len(files)} uploaded files")
+            for file in files:
+                try:
+                    logger.debug(f"Processing file: {file.filename}")
+                    # Read file content
+                    image_data = await file.read()
+                    
+                    # Process with pollinations.ai
+                    result = await process_image_with_pollinations(image_data, file.filename)
+                    
+                    if result["status"] == "success":
+                        extractions.append(result)
+                        # Add asset signals to the overall signals
+                        parsed = result.get("parsed", {})
+                        business_signals = parsed.get("business_signals", [])
+                        if business_signals:
+                            asset_signals += f"File: {file.filename}\n"
+                            asset_signals += f"Signals: {', '.join(business_signals[:5])}\n\n"
+                            logger.debug(f"Added signals from {file.filename}: {business_signals[:5]}")
+                            
+                except Exception as e:
+                    logger.exception(f"Error processing file {file.filename}: {e}")
+                    # Continue processing other files even if one fails
 
-    enriched_details = (
-        "\n\n".join(
-            part
-            for part in [
-                business_details,
+        logger.debug(f"Asset signals: {asset_signals}")
+
+        enriched_details = (
+            "\n\n".join(
+                part
+                for part in [
+                    business_details,
+                    asset_signals,
+                ]
+                if part.strip()
+            )
+        )
+
+        logger.debug(f"Enriched details: {enriched_details[:200]}...")
+
+        build_spec = generate_build_spec(
+            profile,
+            enriched_details,
+        )
+
+        logger.debug(f"Generated build spec: {build_spec}")
+
+        validated_extractions = []
+
+        logger.debug("Running agent graph...")
+        agent_state = run_agent_graph(
+            {
+                "business_input": profile,
+
+                "uploaded_asset_paths": [file.filename for file in files] if files else [],
+
+                "asset_extractions": extractions,
+            },
+
+            planner=json_planner,
+        )
+
+        logger.info("Successfully processed generate_buildspec request")
+        return {
+            "source":
+                "local-qwen-agent-system",
+
+            "assetSignals":
                 asset_signals,
-            ]
-            if part.strip()
-        )
-    )
 
-    build_spec = generate_build_spec(
-        profile,
-        enriched_details,
-    )
+            "assetExtractions":
+                extractions,
 
-    validated_extractions = []
+            "buildSpec":
+                build_spec,
 
-    agent_state = run_agent_graph(
-        {
-            "business_input": profile,
-
-            "uploaded_asset_paths": [file.filename for file in files] if files else [],
-
-            "asset_extractions": extractions,
-        },
-
-        planner=json_planner,
-    )
-
-    return {
-        "source":
-            "local-qwen-agent-system",
-
-        "assetSignals":
-            asset_signals,
-
-        "assetExtractions":
-            extractions,
-
-        "buildSpec":
-            build_spec,
-
-        "graphExecution":
-            agent_state,
-    }
+            "graphExecution":
+                agent_state,
+        }
+    except Exception as e:
+        logger.exception(f"Error in generate_buildspec: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
