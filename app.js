@@ -131,12 +131,13 @@ let state = {
   amdInsights: null,
 
   timelineEvents: [],
+  graphEvents: [],
 
   clarificationQuestions: [],
-
   pendingClarification: null,
-
   assumptions: [],
+  isGenerating: false,
+  resolveClarification: null,
 };
 
 function pushTimelineEvent(agent, message, badge = "active") {
@@ -151,22 +152,18 @@ function pushTimelineEvent(agent, message, badge = "active") {
   renderDynamicTimeline();
 }
 
-async function replayGraphEvents(
-  events,
-) {
+async function replayGraphEvents(events) {
   const sleep = (ms) =>
     new Promise((resolve) =>
       setTimeout(resolve, ms),
     );
 
   for (const event of events) {
+    const nodeName = Object.keys(event)[0];
+    const payload = event[nodeName];
 
-    const nodeName =
-      Object.keys(event)[0];
+    if (!nodeName) continue;
 
-    const payload =
-      event[nodeName];
-    
     updateCognitionPanel(
       nodeName,
       payload,
@@ -176,56 +173,40 @@ async function replayGraphEvents(
       nodeName,
     );
 
-    updateGraphExecution(
-      nodeName,
-    );
-
-    if (!nodeName) continue;
-
     switch (nodeName) {
-
       case "business_profile":
-
         pushTimelineEvent(
           "Business Understanding Agent",
-          `Detected ${payload.vertical} business with ${Math.round((payload.confidence || 0.7) * 100)}% confidence.`,
+          `Detected ${payload?.vertical || "unknown"} business with ${Math.round((payload?.confidence || 0.7) * 100)}% confidence.`,
           "classified",
         );
-
         break;
 
-      case "requirements_spec":
-
+      case "requirements":
         pushTimelineEvent(
           "Requirements Agent",
-          `Generated ${payload.pages?.length || 0} pages and ${payload.included_features?.length || 0} core workflows.`,
+          `Planned ${(payload?.required_pages || []).length} pages and ${(payload?.required_workflows || []).length} workflows.`,
           "researched",
         );
-
         break;
 
       case "strategy_hypotheses":
-
         pushTimelineEvent(
           "Strategy Agent",
-          `Generated ${payload.length || 0} competing behavioral strategies.`,
+          `Generated ${(payload || []).length || (payload?.strategies || []).length || 0} competing behavioural strategies.`,
           "thinking",
         );
-
         break;
 
       case "design_candidates":
-
         pushTimelineEvent(
           "Design Agent",
-          `Created ${payload.length || 0} adaptive design candidates.`,
+          `Created ${(payload || []).length || (payload?.candidates || []).length || 0} adaptive design candidates.`,
           "planned",
         );
-
         break;
 
-      case "critique_reports":
-
+      case "critique":
         pushTimelineEvent(
           "Critique Agent",
           "Evaluated strategic tradeoffs and workflow weaknesses.",
@@ -233,80 +214,64 @@ async function replayGraphEvents(
         );
         pushEvolutionUpdate(
           "CTA Strategy Revision",
-
           "Aggressive immediate conversion CTA",
-
           "Trust-first onboarding flow",
-
           "Critique and simulation agents detected hesitation before trust establishment.",
         );
-
         break;
 
-      case "reflection_report":
-
+      case "reflection":
         pushTimelineEvent(
           "Reflection Agent",
-          payload.summary ||
-            "Reflection completed. Evaluating exploration quality.",
+          "Reflection completed. Evaluating exploration quality.",
           "reflecting",
         );
-
         break;
 
-      case "debate_outcome":
-
+      case "debate":
         pushTimelineEvent(
           "Debate Agent",
-          payload.winning_rationale ||
-            "Debated competing strategies.",
+          payload?.winner_reasoning || "Debated competing strategies.",
           "debating",
         );
-
         break;
 
-      case "simulation_report":
-
+      case "simulation":
         pushTimelineEvent(
           "Simulation Agent",
-          `Behavioral simulation realism score: ${payload.overall_realism_score}/10`,
+          `Behavioural simulation realism score: ${payload?.overall_realism_score || "--"}/10`,
           "simulated",
         );
         pushEvolutionUpdate(
           "Workflow Optimization",
-
           "Users encountered friction during booking",
-
           "Progressive trust-building before booking interaction",
-
           "Simulation agent detected confusion among first-time visitors.",
         );
-
         break;
 
-      case "design_spec":
-
+      case "revise":
         pushTimelineEvent(
           "Synthesis Agent",
-          "Final adaptive website system synthesized.",
+          "Final adaptive website system synthesised.",
           "complete",
         );
-
         break;
 
       default:
-
         pushTimelineEvent(
           "Graph Agent",
           `Executed node: ${nodeName}`,
           "active",
         );
     }
+
     updateCognitionPanel(
       nodeName,
       payload,
     );
-    await sleep(1200);
+
+    await sleep(800);
   }
 }
 
@@ -314,7 +279,6 @@ function updateCognitionPanel(
   nodeName,
   payload,
 ) {
-
   document.querySelector(
     "#activeNode",
   ).textContent =
@@ -331,68 +295,50 @@ function updateCognitionPanel(
     document.querySelector(
       "#uncertaintyValue",
     ).textContent =
-      uncertainty.toFixed(2);
+      Number(uncertainty).toFixed(2);
   }
 
-  const reflection =
-    payload?.reflection_report;
-
   if (
-    reflection
-      ?.exploration_quality
+    payload?.exploration_quality
   ) {
     document.querySelector(
       "#explorationValue",
     ).textContent =
-      `${reflection.exploration_quality}/10`;
+      `${payload.exploration_quality}/10`;
   }
 
   if (
-    reflection
-      ?.convergence_risk
+    payload?.convergence_risk
   ) {
     document.querySelector(
       "#convergenceValue",
     ).textContent =
-      `${reflection.convergence_risk}/10`;
+      `${payload.convergence_risk}/10`;
   }
 
   let reasoningLines = [];
 
   if (
-    payload?.reasoning_notes
+    Array.isArray(payload?.reasoning_notes)
   ) {
-
     reasoningLines =
       payload.reasoning_notes;
-  }
-
-  else if (
-    reflection?.observations
+  } else if (
+    Array.isArray(payload?.observations)
   ) {
-
     reasoningLines =
-      reflection.observations;
-  }
-
-  else if (
-    payload?.tradeoff_analysis
+      payload.observations;
+  } else if (
+    Array.isArray(payload?.tradeoff_analysis)
   ) {
-
     reasoningLines =
       payload.tradeoff_analysis;
-  }
-
-  else if (
-    payload?.systemic_issues
+  } else if (
+    Array.isArray(payload?.systemic_issues)
   ) {
-
     reasoningLines =
       payload.systemic_issues;
-  }
-
-  else {
-
+  } else {
     reasoningLines = [
       `Executing ${nodeName}`,
     ];
@@ -416,7 +362,6 @@ function pushEvolutionUpdate(
   afterState,
   reason,
 ) {
-
   const feed =
     document.querySelector(
       "#evolutionFeed",
@@ -478,71 +423,52 @@ function pushEvolutionUpdate(
 function updateGraphExecution(
   activeNode,
 ) {
+  const orderedNodes = [
+    "business_profile",
+    "requirements",
+    "strategy_hypotheses",
+    "design_candidates",
+    "critique",
+    "reflection",
+    "debate",
+    "simulation",
+    "revise",
+  ];
 
-  const nodes =
-    document.querySelectorAll(
-      ".graph-node",
-    );
-
-  nodes.forEach((node) => {
-
-    node.classList.remove(
-      "active",
-    );
-
-    if (
-      node.dataset.node ===
-      activeNode
-    ) {
-
-      node.classList.add(
-        "active",
-      );
-
-      let previous =
-        node.previousElementSibling;
-
-      while (previous) {
-
-        if (
-          previous.classList?.contains(
-            "graph-node",
-          )
-        ) {
-
-          previous.classList.add(
-            "completed",
-          );
-        }
-
-        previous =
-          previous.previousElementSibling;
-      }
-    }
-  });
-}
-
-function updateGraphExecution(
-  activeNode,
-) {
+  const activeIndex =
+    orderedNodes.indexOf(activeNode);
 
   document
     .querySelectorAll(
       ".graph-node",
     )
     .forEach((node) => {
+      const nodeIndex =
+        orderedNodes.indexOf(
+          node.dataset.node,
+        );
 
       node.classList.remove(
         "active",
+        "completed",
       );
 
       if (
         node.dataset.node ===
         activeNode
       ) {
-
         node.classList.add(
           "active",
+        );
+      }
+
+      if (
+        nodeIndex > -1 &&
+        activeIndex > -1 &&
+        nodeIndex < activeIndex
+      ) {
+        node.classList.add(
+          "completed",
         );
       }
     });
@@ -904,7 +830,7 @@ function generateClarificationQuestions(spec) {
     questions.push({
       id: "restaurant_order_mode",
       question:
-        "Should the ordering flow prioritize pickup, delivery, or both?",
+        "Should the ordering flow prioritise pickup, delivery, or both?",
       options: [
         "Pickup",
         "Delivery",
@@ -1097,6 +1023,7 @@ function renderRestaurantWebsite(spec, visual) {
   const featuredItems = restaurant.items.slice(0, 8);
   const selectedForForm = state.cart[0]?.name || featuredItems[0]?.name || "Margherita Pizza";
   const categoryChips = restaurant.categories.length ? restaurant.categories : ["Popular", "Offers", "Pizzas"];
+  const primaryAction = "Order Now";
 
   document.querySelector("#sitePreview").innerHTML = `
     <section class="generated-hero ${visual.className}" ${firstHeroImage ? `style="background-image: linear-gradient(115deg, rgba(23, 53, 46, 0.92), rgba(80, 52, 32, 0.74)), url('${firstHeroImage.url}'); background-size: cover; background-position: center;"` : ""}>
@@ -1280,7 +1207,7 @@ function verticalTiles(spec) {
     },
     {
       title: "Quote Capture",
-      body: "Requests are collected with enough context for the owner to respond quickly and prioritize work.",
+      body: "Requests are collected with enough context for the owner to respond quickly and prioritise work.",
     },
     {
       title: "Owner Workflow",
@@ -1296,7 +1223,7 @@ function systemProofCopy(spec) {
   if (["restaurant", "cafe", "bakery"].includes(spec.business.vertical)) {
     return "The generated storefront connects customer actions to owner operations through orders, reservations, and QA checks.";
   }
-  return "Customer requests are captured, organized, and verified through the generated admin workflow.";
+  return "Customer requests are captured, organised, and verified through the generated admin workflow.";
 }
 
 function renderAdmin() {
@@ -1386,12 +1313,13 @@ async function runDemo() {
 
   try {
     state.timelineEvents = [];
+    state.graphEvents = [];
+
     document
       .querySelectorAll(
         ".graph-node",
       )
       .forEach((node) => {
-
         node.classList.remove(
           "active",
           "completed",
@@ -1401,6 +1329,10 @@ async function runDemo() {
     document.querySelector(
       "#timeline",
     ).innerHTML = "";
+
+    document.querySelector(
+      "#evolutionFeed",
+    ).innerHTML = `<div class="evolution-empty">Awaiting strategic revisions...</div>`;
 
     document
       .querySelector(
@@ -1413,29 +1345,28 @@ async function runDemo() {
         "/generate-buildspec",
         {
           method: "POST",
-
           headers: {
             "Content-Type":
               "application/json",
           },
-
           body: JSON.stringify({
             business_input: {
               name:
                 document.querySelector(
                   "#businessName",
                 ).value,
-
               location:
                 document.querySelector(
                   "#businessLocation",
                 ).value,
-
               goal:
                 document.querySelector(
                   "#businessGoal",
                 ).value,
-
+              contact_email:
+                document.querySelector(
+                  "#businessEmail",
+                ).value,
               details:
                 document.querySelector(
                   "#businessDetails",
@@ -1444,6 +1375,12 @@ async function runDemo() {
           }),
         },
       );
+
+    if (!response.ok) {
+      throw new Error(
+        `${response.status} ${await response.text()}`
+      );
+    }
 
     const result =
       await response.json();
@@ -1454,16 +1391,17 @@ async function runDemo() {
     );
 
     state.graphEvents =
-      result.graphExecution.events || [];
+      result?.graphExecution?.events || [];
 
     state.spec =
-      result.graphExecution.final_state
-        ?.requirements_spec ||
+      result?.buildSpec ||
       generateBuildSpec();
 
     state.designSpec =
-      result.graphExecution.final_state
-        ?.design_spec ||
+      normalizeServerDesignSpec(
+        result?.designSpec ||
+        result?.graphExecution?.final_state?.design_spec,
+      ) ||
       generateDesignSpec(
         state.spec,
       );
@@ -1491,9 +1429,7 @@ async function runDemo() {
     showPanel(
       "reasoning",
     );
-
   } catch (error) {
-
     console.error(
       "Graph execution failed",
       error,
@@ -1504,25 +1440,44 @@ async function runDemo() {
       `Execution failed: ${error.message}`,
       "error",
     );
-
   } finally {
-
     state.isGenerating =
       false;
   }
 }
-
 
 async function applyAmdPayload(payload, sourceLabel = "AMD Developer Cloud import") {
   state.assetExtractions = payload.assetExtractions || [];
   state.extractedAssetText = payload.assetSignals || "";
   state.amdInsights = buildAmdInsights(state.assetExtractions);
   state.spec = payload.buildSpec;
-  state.designSpec = normalizeServerDesignSpec(payload.designSpec) || null;
+  state.designSpec =
+    normalizeServerDesignSpec(
+      payload.designSpec ||
+      payload.graphExecution?.final_state?.design_spec,
+    ) ||
+    generateDesignSpec(state.spec);
+
   document.querySelector("#assetExtraction").textContent =
     payload.assetSignals ||
     "AMD inference completed. No image-specific signals were returned, but BuildSpec generation succeeded.";
+
   await renderAllFromSpec(sourceLabel);
+}
+
+async function renderAllFromSpec(sourceLabel = "Local planner") {
+  if (!state.spec) return;
+
+  if (!state.designSpec) {
+    state.designSpec = generateDesignSpec(state.spec);
+  }
+
+  renderTimeline(state.spec);
+  renderSpecDynamic(state.spec, state.designSpec);
+  renderWebsiteDynamic(state.spec, state.designSpec);
+  renderAdmin();
+  renderQa(state.spec);
+  renderAmdStatus(sourceLabel);
 }
 
 function showPanel(id) {
@@ -1577,7 +1532,8 @@ document.querySelector("#extractAssets").addEventListener("click", () => {
 document.querySelector("#runAmdAssets").addEventListener("click", async () => {
   const status = document.querySelector("#assetExtraction");
   const apiInput = document.querySelector("#amdApiUrl");
-  const rawApiValue = apiInput.value.trim();
+  apiInput.value.trim();
+
   const fileInput = document.querySelector("#businessAssets");
   const files = [...(fileInput.files || [])];
 
@@ -1589,20 +1545,17 @@ document.querySelector("#runAmdAssets").addEventListener("click", async () => {
   };
 
   try {
-    // For local development, we'll use the local endpoint
     status.textContent = "Processing with local pollinations.ai vision model...";
     const endpoint = "/generate-buildspec";
     const baseBusinessDetails = document.querySelector("#businessDetails").value;
     const extractedPayloads = [];
 
     if (!files.length) {
-      // No files uploaded, just process business details
       extractedPayloads.push(await requestAmdBuildSpec(endpoint, profile, baseBusinessDetails, null));
     } else {
-      // Process uploaded files
       for (let index = 0; index < files.length; index += 1) {
         const file = files[index];
-        status.textContent = `Analyzing image ${index + 1} of ${files.length} with pollinations.ai...`;
+        status.textContent = `Analysing image ${index + 1} of ${files.length} with pollinations.ai...`;
         extractedPayloads.push(await requestAmdBuildSpec(endpoint, profile, baseBusinessDetails, file));
       }
     }
@@ -1687,6 +1640,7 @@ document.querySelector("#applyAmdSpec").addEventListener("click", async () => {
     const imported = JSON.parse(input);
     validateImportedSpec(imported);
     state.spec = imported;
+    state.designSpec = generateDesignSpec(imported);
     await renderAllFromSpec("AMD Developer Cloud import");
     showPanel("spec");
   } catch (error) {
@@ -1709,7 +1663,7 @@ document.querySelector("#loadLatestAmdResult").addEventListener("click", async (
     const payload = await response.json();
     validateAmdPayload(payload);
     document.querySelector("#amdSpecInput").value = JSON.stringify(payload.buildSpec, null, 2);
-    applyAmdPayload(payload, "AMD notebook bridge import");
+    await applyAmdPayload(payload, "AMD notebook bridge import");
     status.textContent = "Loaded amd_result.json from the notebook workspace and applied it to the UI.";
     showPanel("website");
   } catch (error) {
@@ -1735,10 +1689,8 @@ function validateImportedSpec(spec) {
 }
 
 function validateAmdPayload(payload) {
-  const required = ["buildSpec", "designSpec"];
-  const missing = required.filter((key) => !(key in payload));
-  if (missing.length) {
-    throw new Error(`missing AMD payload keys: ${missing.join(", ")}`);
+  if (!payload || !payload.buildSpec) {
+    throw new Error("missing AMD payload key: buildSpec");
   }
   validateImportedSpec(payload.buildSpec);
 }
@@ -1785,73 +1737,13 @@ function candidateApiUrls(rawValue) {
   return [...new Set(candidates.map((value) => value.replace(/\/+$/, "")))];
 }
 
-// async function resolveAmdApiUrl(rawValue) {
-//   const candidates = candidateApiUrls(rawValue);
-//   const errors = [];
-
-//   for (const candidate of candidates) {
-//     try {
-//       const result = await probeAmdApi(candidate);
-//       if (result?.ok) return candidate;
-//       errors.push(`${candidate}: health check did not return ok=true`);
-//     } catch (error) {
-//       errors.push(`${candidate}: ${error.message}`);
-//     }
-//   }
-
-//   throw new Error(`Could not resolve AMD API from this Jupyter page. Tried ${candidates.join(", ")}`);
-// }
-
 async function resolveAmdApiUrl() {
   return "";
 }
 
-// function buildApiEndpoint(apiUrl, path) {
-//   const cleanPath = path.replace(/^\/+/, "");
-//   if (apiUrl.startsWith("/")) {
-//     return `${apiUrl}/${cleanPath}`;
-//   }
-//   return `${apiUrl}/${cleanPath}`;
-// }
-
 function buildApiEndpoint(apiUrl, path) {
   return `/${path.replace(/^\/+/, "")}`;
 }
-
-// async function probeAmdApi(apiUrl) {
-//   const endpoint = buildApiEndpoint(apiUrl, "health");
-//   const response = await fetch(endpoint, {
-//     method: "GET",
-//     credentials: "include",
-//   });
-
-//   if (!response.ok) {
-//     throw new Error(`${response.status} ${await response.text()}`);
-//   }
-
-//   return response.json();
-// }
-
-// async function requestAmdBuildSpec(endpoint, profile, businessDetails, file) {
-//   const formData = new FormData();
-//   formData.append("profile_json", JSON.stringify(profile));
-//   formData.append("business_details", businessDetails);
-//   if (file) {
-//     formData.append("files", file);
-//   }
-
-//   const response = await fetch(endpoint, {
-//     method: "POST",
-//     body: formData,
-//     credentials: "include",
-//   });
-
-//   if (!response.ok) {
-//     throw new Error(`${response.status} ${await response.text()}`);
-//   }
-
-//   return response.json();
-// }
 
 async function requestAmdBuildSpec(
   endpoint,
@@ -1859,18 +1751,15 @@ async function requestAmdBuildSpec(
   businessDetails,
   file = null
 ) {
-
   const response =
     await fetch(
       endpoint,
       {
         method: "POST",
-
         headers: {
           "Content-Type":
             "application/json",
         },
-
         body: JSON.stringify({
           business_input: {
             ...profile,
@@ -1882,7 +1771,6 @@ async function requestAmdBuildSpec(
     );
 
   if (!response.ok) {
-
     throw new Error(
       `${response.status} ${await response.text()}`
     );
@@ -1896,13 +1784,15 @@ function mergeAmdPayloads(profile, businessDetails, payloads) {
   const assetSignals = assetExtractions.length
     ? buildCombinedAssetSignals(assetExtractions)
     : payloads.map((payload) => payload.assetSignals || "").filter(Boolean).join("\n");
-  const buildSpec = generateBuildSpecFromAmdPayload(profile, businessDetails, assetSignals);
+  const buildSpec = payloads[payloads.length - 1]?.buildSpec || generateBuildSpecFromAmdPayload(profile, businessDetails, assetSignals);
+  const graphExecution = payloads[payloads.length - 1]?.graphExecution;
 
   return {
     source: "amd-developer-cloud-qwen2.5-vl-batched",
     assetSignals,
     assetExtractions,
     buildSpec,
+    graphExecution,
   };
 }
 
@@ -2043,7 +1933,7 @@ function renderAmdInsightsPanel() {
     <section class="insights-panel">
       <div>
         <strong>AI found in your uploads</strong>
-        <p>${state.amdInsights.assetCount} asset${state.amdInsights.assetCount === 1 ? "" : "s"} analyzed on AMD GPU.</p>
+        <p>${state.amdInsights.assetCount} asset${state.amdInsights.assetCount === 1 ? "" : "s"} analysed on AMD GPU.</p>
       </div>
       <div class="insights-grid">
         <article class="insight-card">
@@ -2128,50 +2018,59 @@ function generateDesignSpec(spec) {
         tone: hasStrongOffers ? "fast-casual and promotional" : "food-forward and trustworthy",
         density: hasRichMenu ? "high" : "medium",
         mediaBias: hasVisualAssets ? "image-heavy" : "content-heavy",
+        trustEmphasis: "medium",
       },
-      primaryAction: { label: "Order Now", kind: "order" },
+      primaryAction: { label: "Order Now", kind: "order", placements: ["hero", "section_end"] },
       pages: [
         {
           name: "Home",
+          pageType: "home",
           sections: [
-            "hero",
-            "insights",
-            hasVisualAssets ? "gallery_strip" : "page_nav",
-            hasRichMenu ? "menu_showcase" : "feature_grid",
-            "proof_band",
-            "order_form",
+            { type: "hero_offer_banner", purpose: "Lead with the main commercial hook." },
+            { type: "insights", purpose: "Show extracted AMD insights." },
+            { type: hasVisualAssets ? "gallery_strip" : "page_nav", purpose: "Support browsing." },
+            { type: hasRichMenu ? "menu_showcase" : "feature_grid", purpose: "Display the core offer." },
+            { type: "proof_band", purpose: "Support conversion confidence." },
+            { type: "primary_workflow_form", purpose: "Capture order intent." },
           ],
         },
       ],
+      decisionRationale: ["Restaurant flow prioritised ordering speed and visual appetite."],
     };
   }
 
   if (vertical === "clinic") {
     return {
-      brief: "Prioritize trust, credentials, and appointment conversion before deeper service detail.",
-      visual: { tone: "calm and credible", density: "medium", mediaBias: "trust-first" },
-      primaryAction: { label: "Book Appointment", kind: "booking" },
-      pages: [{ name: "Home", sections: ["hero", "insights", "page_nav", "feature_grid", "proof_band", "order_form"] }],
+      brief: "Prioritise trust, credentials, and appointment conversion before deeper service detail.",
+      visual: { tone: "calm and credible", density: "medium", mediaBias: "trust-first", trustEmphasis: "high" },
+      primaryAction: { label: "Book Appointment", kind: "booking", placements: ["hero", "section_end"] },
+      pages: [{ name: "Home", pageType: "home", sections: [{ type: "hero_trust_banner" }, { type: "insights" }, { type: "page_nav" }, { type: "feature_grid" }, { type: "proof_band" }, { type: "primary_workflow_form" }] }],
+      decisionRationale: ["Clinic flow prioritised reassurance and trust before booking."],
     };
   }
 
   return {
-    brief: "Prioritize service clarity and lead capture, supported by trust signals and operational readiness.",
-    visual: { tone: "clear and pragmatic", density: "medium", mediaBias: "copy-first" },
-    primaryAction: { label: "Request Quote", kind: "lead" },
-    pages: [{ name: "Home", sections: ["hero", "insights", "page_nav", "feature_grid", "proof_band", "order_form"] }],
+    brief: "Prioritise service clarity and lead capture, supported by trust signals and operational readiness.",
+    visual: { tone: "clear and pragmatic", density: "medium", mediaBias: "copy-first", trustEmphasis: "medium" },
+    primaryAction: { label: "Request Quote", kind: "lead", placements: ["hero", "section_end"] },
+    pages: [{ name: "Home", pageType: "home", sections: [{ type: "hero_trust_banner" }, { type: "insights" }, { type: "page_nav" }, { type: "feature_grid" }, { type: "proof_band" }, { type: "primary_workflow_form" }] }],
+    decisionRationale: ["Service flow prioritised clarity and quote capture."],
   };
 }
 
 function renderSpecDynamic(spec, designSpec) {
+  const visualTone = designSpec.visual?.tone || designSpec.visual_system?.tone || "practical";
+  const visualDensity = designSpec.visual?.density || designSpec.visual_system?.density || "medium";
+  const ctaLabel = designSpec.primaryAction?.label || designSpec.primary_action?.label || "Continue";
+
   const designCard = `
     <article class="feature-card design-brief-card">
       <strong>Design Brief</strong>
       <p>${designSpec.brief}</p>
       <div class="chip-row">
-        <span class="chip">Tone: ${designSpec.visual.tone}</span>
-        <span class="chip">Density: ${designSpec.visual.density}</span>
-        <span class="chip">CTA: ${designSpec.primaryAction.label}</span>
+        <span class="chip">Tone: ${visualTone}</span>
+        <span class="chip">Density: ${visualDensity}</span>
+        <span class="chip">CTA: ${ctaLabel}</span>
       </div>
     </article>
   `;
@@ -2216,20 +2115,10 @@ function renderSpecDynamic(spec, designSpec) {
 }
 
 function renderWebsiteDynamic(spec, designSpec) {
-  const restaurant =
-    buildRestaurantExperienceData();
-
-  const visual =
-    designAwareVisual(
-      spec,
-      designSpec,
-    );
-
+  const restaurant = buildRestaurantExperienceData();
+  const visual = designAwareVisual(spec, designSpec);
   const pages =
-    (
-      designSpec.pages &&
-      designSpec.pages.length
-    )
+    (designSpec.pages && designSpec.pages.length)
       ? designSpec.pages
       : [
           {
@@ -2242,15 +2131,11 @@ function renderWebsiteDynamic(spec, designSpec) {
   const homePage =
     pages.find(
       (page) =>
-        (
-          page.pageType || ""
-        ).toLowerCase() === "home",
+        (page.pageType || "").toLowerCase() === "home",
     ) || pages[0];
 
   const heroSection =
-    (
-      homePage.sections || []
-    ).find((section) =>
+    (homePage.sections || []).find((section) =>
       [
         "hero_offer_banner",
         "hero_trust_banner",
@@ -2260,9 +2145,7 @@ function renderWebsiteDynamic(spec, designSpec) {
     );
 
   const bodySections =
-    (
-      homePage.sections || []
-    ).filter((section) => {
+    (homePage.sections || []).filter((section) => {
       const sectionType =
         getSectionType(section);
 
@@ -2312,7 +2195,7 @@ function renderWebsiteDynamic(spec, designSpec) {
     "Delivery"
   ) {
     adaptiveHeroCopy =
-      "A delivery-optimized ordering experience with rapid checkout, promo visibility, and operational delivery workflows.";
+      "A delivery-optimised ordering experience with rapid checkout, promo visibility, and operational delivery workflows.";
   }
 
   if (
@@ -2320,7 +2203,7 @@ function renderWebsiteDynamic(spec, designSpec) {
     "Pickup"
   ) {
     adaptiveHeroCopy =
-      "A pickup-first storefront optimized for fast local ordering and streamlined collection.";
+      "A pickup-first storefront optimised for fast local ordering and streamlined collection.";
   }
 
   if (
@@ -2332,8 +2215,7 @@ function renderWebsiteDynamic(spec, designSpec) {
   }
 
   let adaptiveCta =
-    designSpec.primaryAction
-      .label;
+    designSpec.primaryAction.label;
 
   if (
     spec.business.orderMode ===
@@ -2401,7 +2283,7 @@ function renderWebsiteDynamic(spec, designSpec) {
           spec.business.orderMode
             ? `
           <div class="assumption-chip">
-            Optimized for:
+            Optimised for:
             ${spec.business.orderMode}
           </div>
         `
@@ -2441,18 +2323,14 @@ function renderWebsiteDynamic(spec, designSpec) {
           <div>
             <span>
               ${
-                restaurant.items
-                  .length ||
-                spec
-                  .includedFeatures
-                  .length
+                restaurant.items.length ||
+                spec.includedFeatures.length
               }
             </span>
 
             <small>
               ${
-                restaurant.items
-                  .length
+                restaurant.items.length
                   ? "menu items"
                   : "capabilities"
               }
@@ -2462,18 +2340,14 @@ function renderWebsiteDynamic(spec, designSpec) {
           <div>
             <span>
               ${
-                restaurant
-                  .categories
-                  .length ||
+                restaurant.categories.length ||
                 spec.pages.length
               }
             </span>
 
             <small>
               ${
-                restaurant
-                  .categories
-                  .length
+                restaurant.categories.length
                   ? "categories"
                   : "pages"
               }
@@ -2489,8 +2363,7 @@ function renderWebsiteDynamic(spec, designSpec) {
 
             <small>
               ${
-                designSpec.visual
-                  .tone
+                designSpec.visual.tone
               }
             </small>
           </div>
@@ -2851,9 +2724,9 @@ function heroCardTitle(designSpec, heroSection) {
 function heroCardBody(spec, designSpec, restaurant, heroSection) {
   const heroType = typeof heroSection === "string" ? heroSection : heroSection?.type;
   if (heroType === "hero_trust_banner") {
-    return "This direction emphasizes visual reassurance, richer browsing, and social proof before the final order step.";
+    return "This direction emphasises visual reassurance, richer browsing, and social proof before the final order step.";
   }
-  return "This direction emphasizes the strongest commercial signal early, shortens time-to-action, and keeps the ordering path visible.";
+  return "This direction emphasises the strongest commercial signal early, shortens time-to-action, and keeps the ordering path visible.";
 }
 
 function renderDecisionRationaleBand(designSpec) {
@@ -2930,7 +2803,7 @@ function buildRestaurantExperienceData() {
   const fallbackItems = dedupedItems.length
     ? dedupedItems
     : [
-        { id: "fallback-1", name: "Margherita Pizza", category: "Popular", description: "House favorite with quick delivery flow.", priceLabel: "₹199", priceSortValue: 199, visual: state.assets[0]?.url || "" },
+        { id: "fallback-1", name: "Margherita Pizza", category: "Popular", description: "House favourite with quick delivery flow.", priceLabel: "₹199", priceSortValue: 199, visual: state.assets[0]?.url || "" },
         { id: "fallback-2", name: "Veggie Feast", category: "Popular", description: "Customer-friendly menu layout with clear pricing.", priceLabel: "₹249", priceSortValue: 249, visual: state.assets[1]?.url || state.assets[0]?.url || "" },
       ];
 
@@ -3019,5 +2892,3 @@ function renderMenuCard(item) {
     </article>
   `;
 }
-
-//runDemo();
