@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -19,14 +19,13 @@ from agentic_planner import ModelJsonPlanner
 from buildspec_planner import generate_build_spec
 
 
-# Configure logging
 logging.basicConfig(
     level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler('debug.log'),
-        logging.StreamHandler()
-    ]
+        logging.FileHandler("debug.log"),
+        logging.StreamHandler(),
+    ],
 )
 logger = logging.getLogger(__name__)
 
@@ -41,7 +40,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Pollinations.ai vision model endpoint
 POLLINATIONS_VISION_URL = "https://pollinations.ai/api/image-to-text"
 json_planner = None
 
@@ -52,56 +50,50 @@ async def process_image_with_pollinations(image_data: bytes, filename: str) -> d
     """Process an image using pollinations.ai vision model."""
     try:
         logger.debug(f"Processing image: {filename}")
-        # Prepare the request to pollinations.ai
-        # Note: This is a simplified version - you may need to adjust based on the actual API requirements
         async with httpx.AsyncClient() as client:
-            # Create a multipart form data request
             files = {
-                'image': (filename, image_data, 'image/jpeg')  # Adjust content type as needed
+                "image": (filename, image_data, "image/jpeg")
             }
-            
-            # Send request to pollinations.ai
+
             logger.debug(f"Sending request to pollinations API for {filename}")
             response = await client.post(
                 POLLINATIONS_VISION_URL,
                 files=files,
-                timeout=30.0
+                timeout=30.0,
             )
-            
+
             logger.debug(f"Response status for {filename}: {response.status_code}")
-            
+
             if response.status_code == 200:
-                # Parse the response
                 try:
                     result = response.json()
                     logger.debug(f"Successfully parsed JSON response for {filename}")
                 except Exception as e:
-                    # If JSON parsing fails, treat as text response
-                    result = {"text_response": await response.text()}
+                    result = {"text_response": response.text}
                     logger.warning(f"JSON parsing failed for {filename}, using text response: {e}")
-                
+
                 return {
                     "image": filename,
                     "parsed": result,
-                    "status": "success"
+                    "status": "success",
                 }
-            else:
-                # Log the actual error for debugging
-                error_text = await response.text()
-                logger.error(f"Pollinations API error for {filename}: Status {response.status_code}, Response: {error_text}")
-                return {
-                    "image": filename,
-                    "error": f"API request failed with status {response.status_code}: {error_text}",
-                    "status": "error"
-                }
-                
+
+            error_text = response.text
+            logger.error(
+                f"Pollinations API error for {filename}: Status {response.status_code}, Response: {error_text}"
+            )
+            return {
+                "image": filename,
+                "error": f"API request failed with status {response.status_code}: {error_text}",
+                "status": "error",
+            }
+
     except Exception as e:
-        # Log the exception for debugging
         logger.exception(f"Exception in process_image_with_pollinations for {filename}: {e}")
         return {
             "image": filename,
             "error": str(e),
-            "status": "error"
+            "status": "error",
         }
 
 
@@ -110,15 +102,9 @@ def startup() -> None:
     logger.info("Starting up AMD inference server")
     global json_planner
 
-    json_planner = (
-        ModelJsonPlanner(
-            "phi3:mini"
-        )
-    )
+    json_planner = ModelJsonPlanner("phi3:mini")
 
-    logger.info(
-        "Pollinations.ai vision model ready."
-    )
+    logger.info("Pollinations.ai vision model ready.")
 
 
 @app.get("/health")
@@ -270,38 +256,25 @@ def extract_numeric_values(text: str) -> list[float | int]:
 
 
 @app.post("/generate-buildspec")
-async def generate_buildspec(
-    payload: dict,
-    files: list[UploadFile] = File(default=None)
-) -> dict[str, Any]:
+async def generate_buildspec(payload: dict[str, Any]) -> dict[str, Any]:
     logger.info("Received generate_buildspec request")
     logger.debug(f"Request payload: {payload}")
-    logger.debug(f"Uploaded files: {len(files) if files else 0}")
 
     try:
-        # Handle the payload structure properly
-        # The payload should be a dictionary with business_input as a key
         profile = payload.get("business_input", {})
-        
-        # If business_input is not directly in payload, try to find it in nested structure
+
         if not profile:
-            # Try to find business_input in nested structure
             if "payload" in payload and isinstance(payload["payload"], dict):
                 profile = payload["payload"].get("business_input", {})
             elif "business_input" in payload and isinstance(payload["business_input"], dict):
                 profile = payload["business_input"]
-            # Also check if payload itself is the business_input
             elif isinstance(payload, dict):
                 profile = payload
 
-        # If we still don't have a profile, check if it's in a different structure
         if not profile:
-            # Check if payload is a direct business_input
             if isinstance(payload, dict) and "name" in payload and "location" in payload:
                 profile = payload
-            # Check if payload has a nested structure that might contain business_input
             elif isinstance(payload, dict):
-                # Look for business_input in various possible locations
                 for key in ["business_input", "payload", "data"]:
                     if key in payload and isinstance(payload[key], dict):
                         profile = payload[key]
@@ -309,54 +282,17 @@ async def generate_buildspec(
 
         logger.debug(f"Extracted business profile: {profile}")
 
-        business_details = (
-            profile.get(
-                "details",
-                "",
-            )
-        )
-
-        # Process uploaded assets with pollinations.ai vision model
-        extractions = []
+        business_details = profile.get("details", "")
+        extractions: list[dict[str, Any]] = []
         asset_signals = ""
-        
-        # Process uploaded files if any
-        if files:
-            logger.info(f"Processing {len(files)} uploaded files")
-            for file in files:
-                try:
-                    logger.debug(f"Processing file: {file.filename}")
-                    # Read file content
-                    image_data = await file.read()
-                    
-                    # Process with pollinations.ai
-                    result = await process_image_with_pollinations(image_data, file.filename)
-                    
-                    if result["status"] == "success":
-                        extractions.append(result)
-                        # Add asset signals to the overall signals
-                        parsed = result.get("parsed", {})
-                        business_signals = parsed.get("business_signals", [])
-                        if business_signals:
-                            asset_signals += f"File: {file.filename}\n"
-                            asset_signals += f"Signals: {', '.join(business_signals[:5])}\n\n"
-                            logger.debug(f"Added signals from {file.filename}: {business_signals[:5]}")
-                            
-                except Exception as e:
-                    logger.exception(f"Error processing file {file.filename}: {e}")
-                    # Continue processing other files even if one fails
 
-        logger.debug(f"Asset signals: {asset_signals}")
-
-        enriched_details = (
-            "\n\n".join(
-                part
-                for part in [
-                    business_details,
-                    asset_signals,
-                ]
-                if part.strip()
-            )
+        enriched_details = "\n\n".join(
+            part
+            for part in [
+                business_details,
+                asset_signals,
+            ]
+            if str(part).strip()
         )
 
         logger.debug(f"Enriched details: {enriched_details[:200]}...")
@@ -368,37 +304,23 @@ async def generate_buildspec(
 
         logger.debug(f"Generated build spec: {build_spec}")
 
-        validated_extractions = []
-
         logger.debug("Running agent graph...")
         agent_state = run_agent_graph(
             {
                 "business_input": profile,
-
-                "uploaded_asset_paths": [file.filename for file in files] if files else [],
-
-                "asset_extractions": extractions,
+                "uploaded_asset_paths": [],
+                "asset_extractions": [],
             },
-
             planner=json_planner,
         )
 
         logger.info("Successfully processed generate_buildspec request")
         return {
-            "source":
-                "local-qwen-agent-system",
-
-            "assetSignals":
-                asset_signals,
-
-            "assetExtractions":
-                extractions,
-
-            "buildSpec":
-                build_spec,
-
-            "graphExecution":
-                agent_state,
+            "source": "local-qwen-agent-system",
+            "assetSignals": asset_signals,
+            "assetExtractions": extractions,
+            "buildSpec": build_spec,
+            "graphExecution": agent_state,
         }
     except Exception as e:
         logger.exception(f"Error in generate_buildspec: {e}")
