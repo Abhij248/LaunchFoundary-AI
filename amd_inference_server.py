@@ -3,12 +3,11 @@ from __future__ import annotations
 import json
 import logging
 import re
-import tempfile
 from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -153,6 +152,8 @@ def normalize_asset_extraction_payload(item: dict[str, Any]) -> dict[str, Any]:
         parsed["recommended_features"] = normalize_string_list(parsed.get("recommended_features"))
         parsed["trust_or_compliance_notes"] = normalize_string_list(parsed.get("trust_or_compliance_notes"))
         parsed["visual_brand_cues"] = normalize_string_list(parsed.get("visual_brand_cues"))
+        parsed["planner_notes"] = str(parsed.get("planner_notes") or parsed.get("text_response") or "")
+        parsed["asset_type"] = str(parsed.get("asset_type") or "image")
         parsed["extracted_business_info"] = info
         result = {
             "image": item.get("image", ""),
@@ -162,7 +163,21 @@ def normalize_asset_extraction_payload(item: dict[str, Any]) -> dict[str, Any]:
         return result
     except Exception as e:
         logger.exception(f"Error normalizing asset extraction payload: {e}")
-        return item
+        return {
+            "image": item.get("image", ""),
+            "asset_type": "image",
+            "business_signals": [],
+            "extracted_business_info": {
+                "services_or_items": [],
+                "offers": [],
+                "prices": [],
+            },
+            "recommended_pages": [],
+            "recommended_features": [],
+            "trust_or_compliance_notes": [],
+            "visual_brand_cues": [],
+            "planner_notes": str(item.get("error") or "Extraction normalization failed."),
+        }
 
 
 def normalize_string_list(value: Any) -> list[str]:
@@ -255,12 +270,15 @@ def extract_numeric_values(text: str) -> list[float | int]:
         return []
 
 
-def build_fallback_graph_execution(profile: dict[str, Any]) -> dict[str, Any]:
+def build_fallback_graph_execution(
+    profile: dict[str, Any],
+    asset_extractions: list[dict[str, Any]],
+) -> dict[str, Any]:
     return {
         "final_state": {
             "business_input": profile,
-            "uploaded_asset_paths": [],
-            "asset_extractions": [],
+            "uploaded_asset_paths": [item.get("image", "") for item in asset_extractions],
+            "asset_extractions": asset_extractions,
             "business_profile": None,
             "requirements_spec": None,
             "strategy_hypotheses": [],
@@ -283,36 +301,109 @@ def build_fallback_graph_execution(profile: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-@app.post("/generate-buildspec")
-async def generate_buildspec(payload: dict[str, Any]) -> dict[str, Any]:
-    logger.info("Received generate_buildspec request")
-    logger.debug(f"Request payload: {payload}")
+def asset_signals_from_extractions(extractions: list[dict[str, Any]]) -> str:
+    if not extractions:
+        return ""
+
+    lines = ["Extracted asset signals:"]
+    for item in extractions:
+        lines.append(f"File: {item.get('image', 'uploaded-image')}")
+        lines.append(f"Asset type: {item.get('asset_type', 'image')}")
+        for signal in item.get("business_signals", [])[:6]:
+            lines.append(f"- Signal: {signal}")
+
+        info = item.get("extracted_business_info", {}) or {}
+        services = info.get("services_or_items", []) or []
+        offers = info.get("offers", []) or []
+        prices = info.get("prices", []) or []
+
+        if services:
+            lines.append(f"- Services/items visible: {', '.join(str(value) for value in services[:12])}")
+        if offers:
+            lines.append(f"- Offers visible: {', '.join(str(value) for value in offers[:8])}")
+        if prices:
+            lines.append(f"- Prices visible: {', '.join(str(value) for value in prices[:8])}")
+
+        for feature in item.get("recommended_features", [])[:6]:
+            lines.append(f"- Recommended feature: {feature}")
+
+        planner_notes = str(item.get("planner_notes") or "").strip()
+        if planner_notes:
+            lines.append(f"- Planner note: {planner_notes[:240]}")
+
+    return "\n".join(lines)
+
+
+async def extract_request_payload(request: Request, payload_form: str | None) -> dict[str, Any]:
+    content_type = request.headers.get("content-type", "").lower()
+
+    if "multipart/form-data" in content_type:
+        if not payload_form:
+            return {}
+        try:
+            parsed = json.loads(payload_form)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            logger.warning("Failed to decode multipart payload JSON")
+            return {}
 
     try:
-        profile = payload.get("business_input", {})
+        body = await request.json()
+        return body if isinstance(body, dict) else {}
+    except Exception:
+        logger.warning("Failed to decode JSON body")
+        return {}
+
+
+@app.post("/generate-buildspec")
+async def generate_buildspec(
+    request: Request,
+    payload: str | None = Form(default=None),
+    files: list[UploadFile] | None = File(default=None),
+) -> dict[str, Any]:
+    parsed_payload = await extract_request_payload(request, payload)
+
+    logger.info("Received generate_buildspec request")
+    logger.debug(f"Request payload: {parsed_payload}")
+
+    try:
+        profile = parsed_payload.get("business_input", {})
 
         if not profile:
-            if "payload" in payload and isinstance(payload["payload"], dict):
-                profile = payload["payload"].get("business_input", {})
-            elif "business_input" in payload and isinstance(payload["business_input"], dict):
-                profile = payload["business_input"]
-            elif isinstance(payload, dict):
-                profile = payload
+            if "payload" in parsed_payload and isinstance(parsed_payload["payload"], dict):
+                profile = parsed_payload["payload"].get("business_input", {})
+            elif "business_input" in parsed_payload and isinstance(parsed_payload["business_input"], dict):
+                profile = parsed_payload["business_input"]
+            elif isinstance(parsed_payload, dict):
+                profile = parsed_payload
 
         if not profile:
-            if isinstance(payload, dict) and "name" in payload and "location" in payload:
-                profile = payload
-            elif isinstance(payload, dict):
+            if isinstance(parsed_payload, dict) and "name" in parsed_payload and "location" in parsed_payload:
+                profile = parsed_payload
+            elif isinstance(parsed_payload, dict):
                 for key in ["business_input", "payload", "data"]:
-                    if key in payload and isinstance(payload[key], dict):
-                        profile = payload[key]
+                    if key in parsed_payload and isinstance(parsed_payload[key], dict):
+                        profile = parsed_payload[key]
                         break
 
         logger.debug(f"Extracted business profile: {profile}")
 
         business_details = profile.get("details", "")
-        extractions: list[dict[str, Any]] = []
-        asset_signals = ""
+        normalized_extractions: list[dict[str, Any]] = []
+
+        if files:
+            for upload in files:
+                if upload is None:
+                    continue
+                file_bytes = await upload.read()
+                if not file_bytes:
+                    continue
+                extraction = await process_image_with_pollinations(file_bytes, upload.filename or "uploaded-image")
+                normalized_extractions.append(
+                    normalize_asset_extraction_payload(extraction)
+                )
+
+        asset_signals = asset_signals_from_extractions(normalized_extractions)
 
         enriched_details = "\n\n".join(
             part
@@ -337,20 +428,26 @@ async def generate_buildspec(payload: dict[str, Any]) -> dict[str, Any]:
             agent_state = run_agent_graph(
                 {
                     "business_input": profile,
-                    "uploaded_asset_paths": [],
-                    "asset_extractions": [],
+                    "uploaded_asset_paths": [item.get("image", "") for item in normalized_extractions],
+                    "asset_extractions": [
+                        AssetExtraction.model_validate(item)
+                        for item in normalized_extractions
+                    ],
                 },
                 planner=json_planner,
             )
         except Exception as graph_error:
             logger.exception(f"Agent graph failed, using fallback graph execution: {graph_error}")
-            agent_state = build_fallback_graph_execution(profile)
+            agent_state = build_fallback_graph_execution(
+                profile,
+                normalized_extractions,
+            )
 
         logger.info("Successfully processed generate_buildspec request")
         return {
             "source": "local-qwen-agent-system",
             "assetSignals": asset_signals,
-            "assetExtractions": extractions,
+            "assetExtractions": normalized_extractions,
             "buildSpec": build_spec,
             "graphExecution": agent_state,
         }

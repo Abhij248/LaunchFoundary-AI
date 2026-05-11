@@ -158,6 +158,22 @@ async function replayGraphEvents(events) {
       setTimeout(resolve, ms),
     );
 
+  if (!events.length) {
+    pushTimelineEvent(
+      "System",
+      "Planner graph is unavailable, so the app is using deterministic fallback mode with uploaded asset extraction where available.",
+      "active",
+    );
+    updateCognitionPanel("fallback_mode", {
+      observations: [
+        "No graph events were returned.",
+        "Build spec and website rendering are still active.",
+        "Uploaded images, if any, were processed through the backend extraction path.",
+      ],
+    });
+    return;
+  }
+
   for (const event of events) {
     const nodeName = Object.keys(event)[0];
     const payload = event[nodeName];
@@ -930,209 +946,11 @@ function renderSpec(spec) {
 }
 
 function renderWebsite(spec) {
-  const isRestaurant = spec.business.vertical === "restaurant" || spec.business.vertical === "cafe" || spec.business.vertical === "bakery";
-  const isClinic = spec.business.vertical === "clinic";
-  const primaryAction = isRestaurant ? "Order Now" : isClinic ? "Book Appointment" : "Request Quote";
-  const formType = isRestaurant ? "order" : isClinic ? "booking" : "lead";
-  const visual = verticalVisual(spec.business.vertical);
-
-  if (isRestaurant) {
-    renderRestaurantWebsite(spec, visual);
-    return;
-  }
-
-  document.querySelector("#sitePreview").innerHTML = `
-    <section class="generated-hero ${visual.className}">
-      <div>
-        <p class="eyebrow">${spec.business.location}</p>
-        <h3>${spec.business.name}</h3>
-        <p>${heroCopy(spec)}</p>
-        <button class="primary-button" data-scroll-form>${primaryAction}</button>
-      </div>
-      <div class="generated-card">
-        <strong>${visual.cardTitle}</strong>
-        <p>${visual.cardBody}</p>
-        <div class="chip-row">
-          ${spec.trust.slice(0, 4).map((item) => `<span class="chip">${item.replaceAll("_", " ")}</span>`).join("")}
-        </div>
-      </div>
-    </section>
-    <section class="generated-body">
-      ${renderAmdInsightsPanel()}
-      <div class="website-nav">
-        ${spec.pages.map((page) => `<span>${page}</span>`).join("")}
-      </div>
-      <div class="generated-grid">
-        ${verticalTiles(spec)
-          .map(
-            (tile) => `
-              <article class="generated-tile">
-                <strong>${tile.title}</strong>
-                <p>${tile.body}</p>
-              </article>
-            `,
-          )
-          .join("")}
-      </div>
-      <section class="proof-band">
-        <div>
-          <strong>Generated business system</strong>
-          <p>${systemProofCopy(spec)}</p>
-        </div>
-        <div class="chip-row">
-          ${spec.includedFeatures.map((feature) => `<span class="chip">${feature.label}</span>`).join("")}
-        </div>
-      </section>
-      <form id="workflowForm" class="workflow-form" data-type="${formType}">
-        <label>
-          Customer name
-          <input name="customer" value="Alex Morgan" required />
-        </label>
-        <label>
-          ${isRestaurant ? "Order item" : isClinic ? "Service needed" : "Request"}
-          <input name="request" value="${isRestaurant ? "Margherita Pizza" : isClinic ? "Dental cleaning" : "Emergency repair quote"}" required />
-        </label>
-        <label>
-          Contact
-          <input name="contact" value="alex@example.com" required />
-        </label>
-        <button class="primary-button" type="submit">${primaryAction}</button>
-      </form>
-    </section>
-  `;
-
-  document.querySelector("[data-scroll-form]").addEventListener("click", () => {
-    document.querySelector("#workflowForm").scrollIntoView({ behavior: "smooth", block: "center" });
-  });
-
-  document.querySelector("#workflowForm").addEventListener("submit", (event) => {
-    event.preventDefault();
-    const data = Object.fromEntries(new FormData(event.currentTarget).entries());
-    const record = { ...data, time: new Date().toLocaleTimeString() };
-    if (formType === "order") state.orders.unshift(record);
-    if (formType === "booking") state.bookings.unshift(record);
-    if (formType === "lead") state.leads.unshift(record);
-    renderAdmin();
-    showPanel("admin");
-  });
+  renderWebsiteDynamic(spec, state.designSpec || generateDesignSpec(spec));
 }
 
 function renderRestaurantWebsite(spec, visual) {
-  const restaurant = buildRestaurantExperienceData();
-  const firstHeroImage = restaurant.heroImages[0];
-  const featuredItems = restaurant.items.slice(0, 8);
-  const selectedForForm = state.cart[0]?.name || featuredItems[0]?.name || "Margherita Pizza";
-  const categoryChips = restaurant.categories.length ? restaurant.categories : ["Popular", "Offers", "Pizzas"];
-  const primaryAction = "Order Now";
-
-  document.querySelector("#sitePreview").innerHTML = `
-    <section class="generated-hero ${visual.className}" ${firstHeroImage ? `style="background-image: linear-gradient(115deg, rgba(23, 53, 46, 0.92), rgba(80, 52, 32, 0.74)), url('${firstHeroImage.url}'); background-size: cover; background-position: center;"` : ""}>
-      <div>
-        <p class="eyebrow">${spec.business.location}</p>
-        <h3>${spec.business.name}</h3>
-        <p>${heroCopy(spec)}</p>
-        <div class="chip-row">
-          ${restaurant.offers.length ? restaurant.offers.map((offer) => `<span class="chip offer-chip">${offer}</span>`).join("") : `<span class="chip offer-chip">Live ordering enabled</span>`}
-        </div>
-      </div>
-      <div class="generated-card restaurant-summary-card">
-        <strong>${visual.cardTitle}</strong>
-        <p>${visual.cardBody}</p>
-        <div class="summary-stats">
-          <div><span>${restaurant.items.length}</span><small>menu items</small></div>
-          <div><span>${restaurant.categories.length || 3}</span><small>categories</small></div>
-          <div><span>${restaurant.priceRange}</span><small>price band</small></div>
-        </div>
-      </div>
-    </section>
-    <section class="generated-body">
-      ${renderAmdInsightsPanel()}
-      <div class="restaurant-topbar">
-        <div class="website-nav">
-          ${spec.pages.map((page) => `<span>${page}</span>`).join("")}
-        </div>
-        <div class="restaurant-thumbs">
-          ${restaurant.heroImages.slice(0, 4).map((asset) => `<img src="${asset.url}" alt="${asset.name}" />`).join("")}
-        </div>
-      </div>
-      <section class="menu-shell">
-        <div class="menu-column">
-          <div class="menu-header">
-            <div>
-              <strong>Order online</strong>
-              <p>Structured like a delivery app: category-led browsing, quick pricing, and fast add-to-order actions.</p>
-            </div>
-            <div class="chip-row">
-              ${categoryChips.map((category) => `<span class="chip">${category}</span>`).join("")}
-            </div>
-          </div>
-          <div class="menu-grid">
-            ${featuredItems.map((item) => renderMenuCard(item)).join("")}
-          </div>
-        </div>
-        <aside class="cart-column">
-          <div class="cart-card">
-            <strong>Quick cart</strong>
-            <p>${state.cart.length ? `${state.cart.length} item${state.cart.length === 1 ? "" : "s"} selected` : "Choose a few dishes and they will appear here."}</p>
-            <div class="cart-list">
-              ${state.cart.length ? state.cart.map((item) => `<div class="cart-row"><span>${item.name}</span><strong>${item.priceLabel}</strong></div>`).join("") : `<p class="empty">No items added yet.</p>`}
-            </div>
-            <div class="cart-total">
-              <span>Estimated total</span>
-              <strong>${restaurant.cartTotalLabel}</strong>
-            </div>
-          </div>
-          <div class="proof-band">
-            <div>
-              <strong>Generated business system</strong>
-              <p>${systemProofCopy(spec)}</p>
-            </div>
-            <div class="chip-row">
-              ${spec.includedFeatures.map((feature) => `<span class="chip">${feature.label}</span>`).join("")}
-            </div>
-          </div>
-        </aside>
-      </section>
-      <form id="workflowForm" class="workflow-form restaurant-order-form" data-type="order">
-        <label>
-          Customer name
-          <input name="customer" value="Alex Morgan" required />
-        </label>
-        <label>
-          Order item
-          <input name="request" value="${selectedForForm}" required />
-        </label>
-        <label>
-          Contact
-          <input name="contact" value="alex@example.com" required />
-        </label>
-        <button class="primary-button" type="submit">${primaryAction}</button>
-      </form>
-    </section>
-  `;
-
-  document.querySelectorAll("[data-add-item]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const itemId = button.dataset.addItem;
-      const selectedItem = restaurant.items.find((item) => item.id === itemId);
-      if (!selectedItem) return;
-      state.cart.unshift(selectedItem);
-      renderWebsite(spec);
-      const orderInput = document.querySelector('#workflowForm input[name="request"]');
-      if (orderInput) orderInput.value = selectedItem.name;
-    });
-  });
-
-  document.querySelector("#workflowForm").addEventListener("submit", (event) => {
-    event.preventDefault();
-    const data = Object.fromEntries(new FormData(event.currentTarget).entries());
-    const record = { ...data, time: new Date().toLocaleTimeString() };
-    state.orders.unshift(record);
-    state.cart = [];
-    renderAdmin();
-    renderWebsite(spec);
-    showPanel("admin");
-  });
+  renderWebsiteDynamic(spec, state.designSpec || generateDesignSpec(spec));
 }
 
 function heroCopy(spec) {
@@ -1314,6 +1132,8 @@ async function runDemo() {
   try {
     state.timelineEvents = [];
     state.graphEvents = [];
+    state.assetExtractions = [];
+    state.amdInsights = null;
 
     document
       .querySelectorAll(
@@ -1393,6 +1213,17 @@ async function runDemo() {
     state.graphEvents =
       result?.graphExecution?.events || [];
 
+    state.assetExtractions =
+      result?.assetExtractions || [];
+
+    state.extractedAssetText =
+      result?.assetSignals || "";
+
+    state.amdInsights =
+      buildAmdInsights(
+        state.assetExtractions,
+      );
+
     state.spec =
       result?.buildSpec ||
       generateBuildSpec();
@@ -1424,6 +1255,12 @@ async function runDemo() {
 
     renderQa(
       state.spec,
+    );
+
+    renderAmdStatus(
+      state.graphEvents.length
+        ? "Local planner"
+        : "Fallback planner",
     );
 
     showPanel(
@@ -1512,7 +1349,7 @@ document.querySelector("#businessAssets").addEventListener("change", async (even
   renderAssetPreview();
   document.querySelector("#assetExtraction").textContent =
     files.length
-      ? `${files.length} asset${files.length === 1 ? "" : "s"} loaded. Click Extract Asset Info to add business signals.`
+      ? `${files.length} asset${files.length === 1 ? "" : "s"} loaded. Click Generate With AMD to send them to the backend.`
       : "No assets extracted yet. In the AMD flow, this step is powered by a vision/multimodal model on GPU.";
 });
 
@@ -1531,9 +1368,6 @@ document.querySelector("#extractAssets").addEventListener("click", () => {
 
 document.querySelector("#runAmdAssets").addEventListener("click", async () => {
   const status = document.querySelector("#assetExtraction");
-  const apiInput = document.querySelector("#amdApiUrl");
-  apiInput.value.trim();
-
   const fileInput = document.querySelector("#businessAssets");
   const files = [...(fileInput.files || [])];
 
@@ -1545,22 +1379,20 @@ document.querySelector("#runAmdAssets").addEventListener("click", async () => {
   };
 
   try {
-    status.textContent = "Processing with local pollinations.ai vision model...";
+    status.textContent = files.length
+      ? `Uploading ${files.length} image${files.length === 1 ? "" : "s"} to the backend for extraction...`
+      : "Generating from business details only...";
+
     const endpoint = "/generate-buildspec";
     const baseBusinessDetails = document.querySelector("#businessDetails").value;
-    const extractedPayloads = [];
 
-    if (!files.length) {
-      extractedPayloads.push(await requestAmdBuildSpec(endpoint, profile, baseBusinessDetails, null));
-    } else {
-      for (let index = 0; index < files.length; index += 1) {
-        const file = files[index];
-        status.textContent = `Analysing image ${index + 1} of ${files.length} with pollinations.ai...`;
-        extractedPayloads.push(await requestAmdBuildSpec(endpoint, profile, baseBusinessDetails, file));
-      }
-    }
+    const payload = await requestAmdBuildSpec(
+      endpoint,
+      profile,
+      baseBusinessDetails,
+      files,
+    );
 
-    const payload = mergeAmdPayloads(profile, baseBusinessDetails, extractedPayloads);
     await applyAmdPayload(payload, "Local pollinations.ai vision model");
     showPanel("reasoning");
   } catch (error) {
@@ -1701,7 +1533,9 @@ function renderAmdStatus(sourceLabel) {
   const source =
     sourceLabel === "AMD Developer Cloud import"
       ? "AMD-generated BuildSpec is active and driving the local product flow."
-      : "Local deterministic planner is active. Use this shape for AMD notebook inference output.";
+      : sourceLabel === "Fallback planner"
+        ? "Local fallback planner is active. Uploaded images were still sent to the backend extraction pipeline."
+        : "Local deterministic planner is active. Use this shape for AMD notebook inference output.";
   status.textContent = `${source} Current spec: ${state.spec.business.name}, ${state.spec.business.vertical.replaceAll("_", " ")}, readiness ${state.spec.scores.businessReadiness}.`;
 }
 
@@ -1749,10 +1583,35 @@ async function requestAmdBuildSpec(
   endpoint,
   profile,
   businessDetails,
-  file = null
+  files = [],
 ) {
-  const response =
-    await fetch(
+  let response;
+
+  if (files && files.length) {
+    const formData = new FormData();
+    formData.append(
+      "payload",
+      JSON.stringify({
+        business_input: {
+          ...profile,
+          details: businessDetails,
+        },
+      }),
+    );
+
+    files.forEach((file) => {
+      formData.append("files", file);
+    });
+
+    response = await fetch(
+      endpoint,
+      {
+        method: "POST",
+        body: formData,
+      },
+    );
+  } else {
+    response = await fetch(
       endpoint,
       {
         method: "POST",
@@ -1769,6 +1628,7 @@ async function requestAmdBuildSpec(
         }),
       },
     );
+  }
 
   if (!response.ok) {
     throw new Error(
@@ -1799,7 +1659,7 @@ function mergeAmdPayloads(profile, businessDetails, payloads) {
 function buildCombinedAssetSignals(extractions) {
   const lines = ["Extracted asset signals:"];
   extractions.forEach((item) => {
-    const parsed = item?.parsed || {};
+    const parsed = item?.parsed || item || {};
     const info = parsed.extracted_business_info || {};
     lines.push(`File: ${displayAssetName(item.image)}`);
     lines.push(`Asset type: ${parsed.asset_type || "unknown"}`);
@@ -1933,7 +1793,7 @@ function renderAmdInsightsPanel() {
     <section class="insights-panel">
       <div>
         <strong>AI found in your uploads</strong>
-        <p>${state.amdInsights.assetCount} asset${state.amdInsights.assetCount === 1 ? "" : "s"} analysed on AMD GPU.</p>
+        <p>${state.amdInsights.assetCount} asset${state.amdInsights.assetCount === 1 ? "" : "s"} analysed on backend vision extraction.</p>
       </div>
       <div class="insights-grid">
         <article class="insight-card">
@@ -1964,7 +1824,7 @@ function buildAmdInsights(extractions) {
   const prices = [];
 
   extractions.forEach((item) => {
-    const parsed = item?.parsed || {};
+    const parsed = item || {};
     const info = parsed.extracted_business_info || {};
     (info.offers || []).forEach((offer) => offers.push(String(offer)));
     (info.services_or_items || []).forEach((entry) => items.push(String(entry)));
@@ -2771,7 +2631,7 @@ function buildRestaurantExperienceData() {
   let categoryIndex = 1;
 
   state.assetExtractions.forEach((extraction) => {
-    const parsed = extraction?.parsed || {};
+    const parsed = extraction || {};
     const info = parsed.extracted_business_info || {};
     const assetType = parsed.asset_type || "menu";
     const signals = parsed.business_signals || [];
