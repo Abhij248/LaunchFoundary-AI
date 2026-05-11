@@ -33,6 +33,7 @@ except ImportError:  # pragma: no cover
     START = "START"
     StateGraph = None
 
+
 def infer_vertical_from_business_input(
     state: WebsiteAgentState | None,
 ) -> str:
@@ -749,7 +750,6 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
         return state
 
     def design_candidates_node(
-            
         state: WebsiteAgentState,
     ) -> WebsiteAgentState:
         state.revision_iteration += 1
@@ -927,6 +927,7 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
             )
 
         return state
+
     def debate_node(
         state: WebsiteAgentState,
     ) -> WebsiteAgentState:
@@ -972,7 +973,7 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
         )
 
         return state
-    
+
     def simulation_node(
         state: WebsiteAgentState,
     ) -> WebsiteAgentState:
@@ -1077,6 +1078,17 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
     def critique_router(
         state: WebsiteAgentState,
     ) -> str:
+        # Hard revision cap to prevent endless loops if routing keeps requesting regeneration.
+        # Note: design_candidates_node increments revision_iteration.
+        MAX_REVISION_ITERATIONS = 4
+        if state.revision_iteration >= MAX_REVISION_ITERATIONS:
+            state.reasoning_notes.append(
+                (
+                    "Reached maximum revision iterations "
+                    f"({MAX_REVISION_ITERATIONS}). Proceeding to final synthesis."
+                )
+            )
+            return "revise"
 
         if (
             state.simulation_report
@@ -1088,7 +1100,6 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                     "Regenerating workflows."
                 )
             )
-
             return "design_candidates"
 
         if (
@@ -1101,44 +1112,26 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                     "Expanding strategic search."
                 )
             )
-
             return "design_candidates"
 
         if (
             state.reflection_report
             and state.reflection_report.should_expand_exploration
         ):
-
             state.reasoning_notes.append(
                 (
                     "Reflection agent requested "
                     "expanded strategic exploration."
                 )
             )
-
             return "design_candidates"
 
-        if (
-            state.revision_iteration >= 3
-        ):
-            state.reasoning_notes.append(
-                (
-                    "Reached maximum revision "
-                    "iterations. Proceeding "
-                    "to final synthesis."
-                )
-            )
-
-            return "revise"
-
         weak_candidates = 0
-
         average_scores = []
 
         for critique in (
             state.critique_reports
         ):
-
             avg = (
                 sum(
                     score.score
@@ -1146,7 +1139,6 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
                 / len(critique.scores)
             )
-
             average_scores.append(avg)
 
             if avg < 7:
@@ -1166,7 +1158,6 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
         if (
             weak_candidates > threshold
         ):
-
             state.reasoning_notes.append(
                 (
                     "Critique quality insufficient "
@@ -1175,7 +1166,6 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                     "with deeper exploration."
                 )
             )
-
             return "design_candidates"
 
         state.reasoning_notes.append(
@@ -1193,15 +1183,15 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
         WebsiteAgentState
     )
     graph.add_node(
-    "debate",
-    debate_node,
+        "debate",
+        debate_node,
     )
 
     graph.add_node(
-    "simulation",
-    simulation_node,
+        "simulation",
+        simulation_node,
     )
-    
+
     graph.add_node(
         "business_profile",
         business_profile_node,
@@ -1318,6 +1308,51 @@ def serialize_graph_event(
     return serialized
 
 
+def _state_cycle_signature(state: WebsiteAgentState) -> tuple:
+    """
+    Lightweight signature to detect obvious cycles where the graph keeps regenerating
+    without meaningful progress.
+    """
+    try:
+        vertical = (
+            state.business_profile.vertical.value
+            if state.business_profile
+            else "unknown"
+        )
+    except Exception:
+        vertical = "unknown"
+
+    # Use revision iteration + key confidence/quality signals if present.
+    sim_score = (
+        state.simulation_report.overall_realism_score
+        if state.simulation_report
+        else None
+    )
+    debate_conf = (
+        state.debate_outcome.confidence
+        if state.debate_outcome
+        else None
+    )
+    expand = (
+        state.reflection_report.should_expand_exploration
+        if state.reflection_report
+        else None
+    )
+    # Structure proxy: number of candidates and critiques.
+    cand_count = len(state.design_candidates or [])
+    critique_count = len(state.critique_reports or [])
+
+    return (
+        vertical,
+        state.revision_iteration,
+        sim_score,
+        debate_conf,
+        expand,
+        cand_count,
+        critique_count,
+    )
+
+
 def run_agent_graph(
     initial_state: dict[str, Any],
     planner: ModelJsonPlanner,
@@ -1335,10 +1370,24 @@ def run_agent_graph(
 
     final_state = None
 
-    for event in graph.stream(
-        state,
-        stream_mode="updates",
+    # Global termination guards:
+    # - Max number of streamed updates
+    # - Loop signature repeat cap
+    MAX_STREAM_UPDATES = 60
+    MAX_SIGNATURE_REPEATS = 6
+    signature_repeat_count: dict[tuple, int] = {}
+
+    for idx, event in enumerate(
+        graph.stream(
+            state,
+            stream_mode="updates",
+        ),
+        start=1,
     ):
+        if idx > MAX_STREAM_UPDATES:
+            raise RuntimeError(
+                f"graph exceeded MAX_STREAM_UPDATES={MAX_STREAM_UPDATES} without terminating"
+            )
 
         serialized = (
             serialize_graph_event(
@@ -1349,11 +1398,27 @@ def run_agent_graph(
         events.append(
             serialized
         )
-
         final_state = event
 
-    try:
+        # cycle detection using latest state (graph emits partial updates but final_state will accumulate)
+        try:
+            if hasattr(final_state, "get"):
+                # if event is dict-like, we can't reliably reconstruct state; use state object
+                sig = _state_cycle_signature(state)
+            else:
+                sig = _state_cycle_signature(state)
+        except Exception:
+            sig = None
 
+        if sig is not None:
+            signature_repeat_count[sig] = signature_repeat_count.get(sig, 0) + 1
+            if signature_repeat_count[sig] >= MAX_SIGNATURE_REPEATS:
+                raise RuntimeError(
+                    "graph appears to be stuck in a planning loop (cycle signature repeated "
+                    f"{MAX_SIGNATURE_REPEATS} times)."
+                )
+
+    try:
         validated = (
             WebsiteAgentState.model_validate(
                 final_state
@@ -1440,6 +1505,7 @@ def build_requirements_prompt(state: WebsiteAgentState) -> str:
         - conversion_priorities
         """
     ).strip()
+
 
 def build_strategy_prompt(
     state: WebsiteAgentState,
@@ -1550,6 +1616,7 @@ def build_strategy_prompt(
           - conversion assumptions
         """
     ).strip()
+
 
 def build_design_candidates_prompt(
     state: WebsiteAgentState,
@@ -1897,6 +1964,7 @@ def build_revision_prompt(
         """
     ).strip()
 
+
 def build_reflection_prompt(
     state: WebsiteAgentState,
 ) -> str:
@@ -1965,6 +2033,7 @@ def build_reflection_prompt(
         """
     ).strip()
 
+
 def build_debate_prompt(
     state: WebsiteAgentState,
 ) -> str:
@@ -2031,6 +2100,7 @@ def build_debate_prompt(
           - operational usability
         """
     ).strip()
+
 
 def build_simulation_prompt(
     state: WebsiteAgentState,
@@ -2229,7 +2299,6 @@ def normalize_requirements_payload(
         business_profile,
         dict,
     ):
-
         business_profile[
             "vertical"
         ] = normalize_enum(
@@ -2387,16 +2456,19 @@ def normalize_design_spec_payload(payload: dict[str, Any], state: WebsiteAgentSt
 
 
 def normalize_design_candidate(candidate: dict[str, Any], index: int, state: WebsiteAgentState) -> dict[str, Any]:
-    mode = determine_candidate_mode(candidate, index)
+    mode = determine_candidate_mode(candidate)
+
     strategy = (
-    state.strategy_hypotheses[
-        min(
-            index - 1,
-            len(state.strategy_hypotheses) - 1,
-        )
-    ]
-    if state.strategy_hypotheses
-    else None )
+        state.strategy_hypotheses[
+            min(
+                index - 1,
+                len(state.strategy_hypotheses) - 1,
+            )
+        ]
+        if state.strategy_hypotheses
+        else None
+    )
+
     pages = candidate.get("pages") or candidate.get("page_specs") or candidate.get("page_plan") or []
     if not isinstance(pages, list) or not pages:
         pages = [
@@ -2405,7 +2477,7 @@ def normalize_design_candidate(candidate: dict[str, Any], index: int, state: Web
         ]
     return {
         "candidate_id": candidate.get("candidate_id") or candidate.get("id") or f"candidate_{index}",
-        
+
         "rationale": (
             candidate.get("rationale")
             or candidate.get("summary")
@@ -2918,54 +2990,11 @@ def truncate_text(value: str, limit: int) -> str:
     return value[: max(0, limit - 3)].rstrip() + "..."
 
 
-def determine_candidate_mode(candidate: dict[str, Any], index: int) -> str:
-    if index == 2:
-        return "trust_browsing"
+def determine_candidate_mode(candidate: dict[str, Any], index: int = 1) -> str:
     rationale = str(candidate.get("rationale") or candidate.get("summary") or candidate.get("description") or "").lower()
     if any(token in rationale for token in ("trust", "browse", "browsing", "clarity", "exploration")):
         return "trust_browsing"
     return "conversion"
-
-
-# def enforce_candidate_mode_on_pages(pages: list[dict[str, Any]], state: WebsiteAgentState, mode: str) -> list[dict[str, Any]]:
-#     enforced: list[dict[str, Any]] = []
-#     for page in pages:
-#         page_type = page.get("page_type", "home")
-#         sections = page.get("sections", [])
-#         enforced.append({**page, "sections": enforce_candidate_mode_on_sections(sections, page_type, state, mode)})
-#     return enforced
-
-
-# def enforce_candidate_mode_on_sections(sections: list[dict[str, Any]], page_type: str, state: WebsiteAgentState, mode: str) -> list[dict[str, Any]]:
-#     recipe = candidate_mode_recipe(page_type, mode)
-#     if not recipe:
-#         return sections
-#     by_type = {section.get("type"): section for section in sections}
-#     rebuilt: list[dict[str, Any]] = []
-#     for priority, section_type in enumerate(recipe, start=1):
-#         if section_type in by_type:
-#             section = dict(by_type[section_type])
-#             section["priority"] = priority
-#             rebuilt.append(section)
-#         else:
-#             rebuilt.append(normalize_section_spec({"type": section_type, "priority": priority}, priority, page_type, state))
-#     return rebuilt
-
-
-# def candidate_mode_recipe(page_type: str, mode: str) -> list[str]:
-#     if page_type == "home" and mode == "conversion":
-#         return ["hero_offer_banner", "primary_workflow_form", "menu_showcase", "proof_band", "page_nav"]
-#     if page_type == "home" and mode == "trust_browsing":
-#         return ["hero_trust_banner", "gallery_strip", "menu_showcase", "review_band", "page_nav"]
-#     if page_type == "menu" and mode == "conversion":
-#         return ["category_strip", "menu_showcase", "primary_workflow_form"]
-#     if page_type == "menu" and mode == "trust_browsing":
-#         return ["category_strip", "menu_showcase", "review_band", "primary_workflow_form"]
-#     if page_type == "order" and mode == "conversion":
-#         return ["primary_workflow_form", "trust_band"]
-#     if page_type == "order" and mode == "trust_browsing":
-#         return ["trust_band", "primary_workflow_form"]
-#     return []
 
 
 def calculate_similarity_penalty(candidate: Any, candidates: list[Any]) -> int:
@@ -3043,7 +3072,7 @@ def infer_default_sections_for_page(page_type: str, state: WebsiteAgentState, pa
         return [
             {"type": infer_home_hero_type(state), "purpose": purpose, "rationale": "Lead with the most important conversion or trust signal."},
             {"type": "primary_workflow_form", "purpose": "Capture ordering intent as early as possible.", "rationale": "Conversion-first journeys should reduce friction quickly."},
-            {"type": infer_primary_content_section(state), "purpose": "Show the main offer or catalog.", "rationale": "This is the core browsing surface."},
+            {"type": "feature_grid", "purpose": "Show the main offer or catalog.", "rationale": "This is the core browsing surface."},
             {"type": "proof_band", "purpose": "Reinforce legitimacy and conversion confidence.", "rationale": "Adds credibility before action."},
             {"type": "page_nav", "purpose": "Help visitors orient quickly.", "rationale": "Supports fast scanning."},
         ]
