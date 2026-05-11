@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LaunchFoundry AI</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">LF</div>
+          <div>
+            <p class="eyebrow">AMD Hackathon MVP</p>
+            <h1>LaunchFoundry AI</h1>
+          </div>
+        </div>
+        <nav class="steps" aria-label="Workflow">
+          <button class="step is-active" data-target="intake">1. Intake</button>
+          <button class="step" data-target="reasoning">2. Reasoning</button>
+          <button class="step" data-target="spec">3. Build Spec</button>
+          <button class="step" data-target="website">4. Website</button>
+          <button class="step" data-target="admin">5. Admin</button>
+          <button class="step" data-target="qa">6. QA</button>
+          <button class="step" data-target="amd">7. AMD Proof</button>
+        </nav>
+        <section class="amd-panel">
+          <p class="eyebrow">AMD GPU Role</p>
+          <p>
+            AMD Developer Cloud powers inference for business understanding, build-spec generation,
+            and multimodal intake. The local app demonstrates the product workflow.
+          </p>
+        </section>
+      </aside>
+
+      <section class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Autonomous AI Web Agency</p>
+            <h2>Raw business input to working digital infrastructure</h2>
+          </div>
+          <button id="runDemo" class="primary-button">Generate System</button>
+        </header>
+
+        <section id="intake" class="panel is-visible">
+          <div class="section-title">
+            <h3>Business Intake</h3>
+            <p>Start with business facts, not templates.</p>
+          </div>
+          <div class="form-grid">
+            <label>
+              Business name
+              <input id="businessName" value="Bella Napoli" />
+            </label>
+            <label>
+              Location
+              <input id="businessLocation" value="San Francisco" />
+            </label>
+            <label>
+              Goal
+              <select id="businessGoal">
+                <option>increase online orders and table reservations</option>
+                <option>increase appointment bookings</option>
+                <option>capture more qualified leads</option>
+              </select>
+            </label>
+            <label>
+              Contact email
+              <input id="businessEmail" value="hello@bellanapoli.example" />
+            </label>
+            <label class="wide">
+              Raw business details
+              <textarea id="businessDetails">Bella Napoli is a family Italian restaurant in San Francisco. It serves pizza, pasta, desserts, and has a menu for pickup orders. Business hours are 11am to 10pm daily. The owner wants more online orders and table reservations.</textarea>
+            </label>
+          </div>
+          <section class="asset-intake">
+            <div>
+              <h4>Business Assets</h4>
+              <p>Upload menus, brochures, flyers, storefront photos, service lists, or anything useful.</p>
+            </div>
+            <label>
+              AMD inference API URL
+              <input id="amdApiUrl" value="auto" />
+            </label>
+            <label class="file-drop">
+              <span>Select relevant images</span>
+              <input id="businessAssets" type="file" accept="image/*" multiple />
+            </label>
+            <div id="assetPreview" class="asset-preview"></div>
+            <div class="action-row">
+              <button id="runAmdAssets" class="primary-button">Generate With AMD</button>
+              <button id="extractAssets" class="ghost-button">Extract Asset Info</button>
+              <button id="clearAssets" class="ghost-button">Clear Assets</button>
+            </div>
+            <div id="assetExtraction" class="extraction-box">
+              No assets extracted yet. In the AMD flow, this step is powered by a vision/multimodal model on GPU.
+            </div>
+          </section>
+          <div class="preset-row">
+            <button class="ghost-button" data-preset="restaurant">Load Restaurant</button>
+            <button class="ghost-button" data-preset="clinic">Load Clinic</button>
+            <button class="ghost-button" data-preset="service">Load Service Business</button>
+          </div>
+        </section>
+
+        <section id="reasoning" class="panel">
+          <div class="section-title">
+            <h3>Agent Reasoning</h3>
+            <p>Visible decisions make the system feel reliable.</p>
+          </div>
+          <div id="timeline" class="timeline"></div>
+
+          <div class="cognition-panel">
+
+            <div class="cognition-header">
+              Active Cognition
+            </div>
+
+            <div class="cognition-grid">
+
+              <div class="cognition-card">
+                <span>Current Node</span>
+                <strong id="activeNode">
+                  Waiting...
+                </strong>
+              </div>
+
+              <div class="cognition-card">
+                <span>Uncertainty</span>
+                <strong id="uncertaintyValue">
+                  --
+                </strong>
+              </div>
+
+              <div class="cognition-card">
+                <span>Exploration</span>
+                <strong id="explorationValue">
+                  --
+                </strong>
+              </div>
+
+              <div class="cognition-card">
+                <span>Convergence Risk</span>
+                <strong id="convergenceValue">
+                  --
+                </strong>
+              </div>
+
+            </div>
+
+            <div class="cognition-stream">
+              <div id="cognitionReasoning">
+                Awaiting execution...
+              </div>
+            </div>
+
+          </div>
+          <div class="evolution-panel">
+
+            <div class="evolution-header">
+              Strategic Evolution
+            </div>
+
+            <div id="evolutionFeed">
+              <div class="evolution-empty">
+                Awaiting strategic revisions...
+              </div>
+            </div>
+
+          </div>
+          <div class="graph-panel">
+
+            <div class="graph-header">
+              Cognitive Graph Execution
+            </div>
+
+            <div class="graph-flow">
+
+              <div
+                class="graph-node"
+                data-node="business_profile"
+              >
+                Business Profile
+              </div>
+
+              <div class="graph-arrow">↓</div>
+
+              <div
+                class="graph-node"
+                data-node="requirements"
+              >
+                Requirements
+              </div>
+
+              <div class="graph-arrow">↓</div>
+
+              <div
+                class="graph-node"
+                data-node="strategy_hypotheses"
+              >
+                Strategy
+              </div>
+
+              <div class="graph-arrow">↓</div>
+
+              <div
+                class="graph-node"
+                data-node="design_candidates"
+              >
+                Design
+              </div>
+
+              <div class="graph-arrow">↓</div>
+
+              <div
+                class="graph-node"
+                data-node="critique"
+              >
+                Critique
+              </div>
+
+              <div class="graph-arrow">↓</div>
+
+              <div
+                class="graph-node"
+                data-node="reflection"
+              >
+                Reflection
+              </div>
+
+              <div class="graph-arrow">↓</div>
+
+              <div
+                class="graph-node"
+                data-node="debate"
+              >
+                Debate
+              </div>
+
+              <div class="graph-arrow">↓</div>
+
+              <div
+                class="graph-node"
+                data-node="simulation"
+              >
+                Simulation
+              </div>
+
+              <div class="graph-arrow">↓</div>
+
+              <div
+                class="graph-node"
+                data-node="revise"
+              >
+                Revision
+              </div>
+
+            </div>
+
+          </div>
+        </section>
+
+        <section id="spec" class="panel">
+          <div class="section-title">
+            <h3>Build Spec</h3>
+            <p>The generated site and backend follow this plan.</p>
+          </div>
+          <div class="action-row">
+            <button id="copySpec" class="ghost-button">Copy Build Spec</button>
+            <button id="downloadSpec" class="ghost-button">Download Build Spec</button>
+          </div>
+          <div class="spec-layout">
+            <div id="specCards" class="spec-cards"></div>
+            <pre id="specJson" class="json-block"></pre>
+          </div>
+        </section>
+
+        <section id="website" class="panel">
+          <div class="section-title">
+            <h3>Generated Website</h3>
+            <p>A business-ready site with operational workflows.</p>
+          </div>
+          <div id="sitePreview" class="site-preview"></div>
+        </section>
+
+        <section id="admin" class="panel">
+          <div class="section-title">
+            <h3>Generated Admin Backend</h3>
+            <p>Orders, bookings, and leads appear here after customer actions.</p>
+          </div>
+          <div class="admin-grid">
+            <section>
+              <h4>Orders</h4>
+              <div id="ordersList" class="record-list"></div>
+            </section>
+            <section>
+              <h4>Bookings</h4>
+              <div id="bookingsList" class="record-list"></div>
+            </section>
+            <section>
+              <h4>Leads</h4>
+              <div id="leadsList" class="record-list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="qa" class="panel">
+          <div class="section-title">
+            <h3>QA + Readiness</h3>
+            <p>The system validates the business infrastructure before launch.</p>
+          </div>
+          <div id="qaReport" class="qa-grid"></div>
+        </section>
+
+        <section id="amd" class="panel">
+          <div class="section-title">
+            <h3>AMD Inference Proof</h3>
+            <p>Paste a BuildSpec generated in AMD Jupyter to drive the same product flow.</p>
+          </div>
+          <div class="amd-proof-grid">
+            <section>
+              <h4>Notebook Steps</h4>
+              <ol class="checklist">
+                <li>Run `rocm-smi` and PyTorch GPU check.</li>
+                <li>Generate a BuildSpec with Qwen or the fallback planner.</li>
+                <li>Copy the JSON output from the notebook.</li>
+                <li>Paste it here and apply it to the local app.</li>
+              </ol>
+              <div id="amdStatus" class="status-box">
+                Local deterministic planner is active. AMD-generated spec not imported yet.
+              </div>
+            </section>
+            <section>
+              <h4>Import AMD BuildSpec JSON</h4>
+              <label class="file-drop">
+                <span>Select BuildSpec JSON file</span>
+                <input id="amdSpecFile" type="file" accept="application/json,.json" />
+              </label>
+              <textarea id="amdSpecInput" class="amd-spec-input" placeholder='Paste BuildSpec JSON from AMD Jupyter here'></textarea>
+              <div class="action-row">
+                <button id="applyAmdSpec" class="primary-button">Apply AMD Spec</button>
+                <button id="loadLatestAmdResult" class="ghost-button">Load Latest AMD Result</button>
+                <button id="loadCurrentSpec" class="ghost-button">Load Current Spec</button>
+              </div>
+            </section>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>

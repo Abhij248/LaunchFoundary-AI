@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import re
+from pathlib import Path
 from typing import Any, TypeVar
 
 import httpx
@@ -15,17 +17,70 @@ SchemaT = TypeVar(
 )
 
 
+def load_local_env() -> None:
+    env_path = Path(__file__).resolve().parent / ".env"
+    if not env_path.exists():
+        return
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+load_local_env()
+
+
 class ModelJsonPlanner:
 
     def __init__(
         self,
-        model_name: str = "phi3:mini",
+        model_name: str = "openai",
     ) -> None:
+        self.pollinations_url = "https://gen.pollinations.ai/v1/chat/completions"
+        self.api_key = os.getenv("POLLINATIONS_API_KEY", os.getenv("pollinations_api_key", ""))
+        configured_model = os.getenv("POLLINATIONS_TEXT_MODEL", os.getenv("pollinations_text_model", "")).strip()
+        self.model_name = configured_model or "openai"
+        self.degraded_mode = False
+        self.degraded_reason = ""
+        self.failure_count = 0
+        self.failure_limit = 1
+        self.request_errors: list[str] = []
 
-        self.model_name = (
-            model_name
-        )
-        self.pollinations_url = "https://pollinations.ai/api/generate"
+    def begin_request(
+        self,
+    ) -> None:
+        self.degraded_mode = False
+        self.degraded_reason = ""
+        self.failure_count = 0
+        self.request_errors = []
+
+    def register_failure(
+        self,
+        stage: str,
+        error: Exception | str,
+    ) -> None:
+        self.failure_count += 1
+        message = f"{stage}: {error}"
+        self.request_errors.append(message)
+        if self.failure_count >= self.failure_limit:
+            self.degraded_mode = True
+            self.degraded_reason = message
+
+    def get_health_status(
+        self,
+    ) -> dict[str, Any]:
+        return {
+            "mode": "degraded_local_fallback" if self.degraded_mode else "external_pollinations",
+            "degraded": self.degraded_mode,
+            "reason": self.degraded_reason,
+            "failure_count": self.failure_count,
+            "errors": list(self.request_errors),
+        }
 
     def generate_model(
         self,
@@ -103,26 +158,62 @@ class ModelJsonPlanner:
         prompt: str,
         max_new_tokens: int = 500,
     ) -> str:
-        try:
-            with httpx.Client() as client:
-                response = client.post(
-                    self.pollinations_url,
-                    json={
-                        "prompt": prompt,
-                        "model": self.model_name,
-                        "max_new_tokens": max_new_tokens,
-                        "temperature": 0,
-                    },
-                    timeout=60.0
-                )
-                response.raise_for_status()
-                result = response.json()
-                if isinstance(result, dict):
-                    return result.get("response", result.get("text", "{}")) or "{}"
-                return str(result) if str(result).strip() else "{}"
-        except Exception as e:
-            print(f"Pollinations API error: {e}")
+        if self.degraded_mode:
             return "{}"
+        last_error = None
+        for _ in range(2):
+            try:
+                with httpx.Client() as client:
+                    headers = {
+                        "Content-Type": "application/json",
+                    }
+                    if self.api_key:
+                        headers["Authorization"] = f"Bearer {self.api_key}"
+                    response = client.post(
+                        self.pollinations_url,
+                        headers=headers,
+                        json={
+                            "model": self.model_name,
+                            "messages": [
+                                {
+                                    "role": "user",
+                                    "content": [
+                                        {
+                                            "type": "text",
+                                            "text": prompt,
+                                        }
+                                    ],
+                                }
+                            ],
+                            "temperature": 0,
+                        },
+                        timeout=60.0
+                    )
+                    response.raise_for_status()
+                    result = response.json()
+                    if isinstance(result, dict):
+                        choices = result.get("choices")
+                        if isinstance(choices, list) and choices:
+                            message = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
+                            content = message.get("content") if isinstance(message, dict) else None
+                            if isinstance(content, str) and content.strip():
+                                return content
+                        return result.get("response", result.get("text", "{}")) or "{}"
+                    return str(result) if str(result).strip() else "{}"
+            except httpx.HTTPStatusError as e:
+                response_text = e.response.text if e.response is not None else ""
+                last_error = f"{e} | body={response_text[:500]}"
+                continue
+            except Exception as e:
+                last_error = e
+                continue
+        if last_error is not None:
+            self.register_failure(
+                "pollinations_generate",
+                last_error,
+            )
+        print(f"Pollinations API error: {last_error}")
+        return "{}"
 
 
 def parse_json_object(

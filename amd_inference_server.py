@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import base64
 import json
 import logging
+import mimetypes
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -31,6 +34,24 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="LaunchFoundry AMD Inference API")
 APP_DIR = Path(__file__).resolve().parent
 
+
+def load_local_env() -> None:
+    env_path = APP_DIR / ".env"
+    if not env_path.exists():
+        return
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+load_local_env()
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -39,25 +60,63 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-POLLINATIONS_VISION_URL = "https://pollinations.ai/api/image-to-text"
+POLLINATIONS_VISION_URL = "https://gen.pollinations.ai/v1/chat/completions"
+POLLINATIONS_VISION_MODEL = os.getenv("POLLINATIONS_VISION_MODEL", os.getenv("pollinations_vision_model", "openai"))
+POLLINATIONS_API_KEY = os.getenv("POLLINATIONS_API_KEY", os.getenv("pollinations_api_key", ""))
 json_planner = None
 
 app.mount("/static", StaticFiles(directory=APP_DIR), name="static")
 
 
 async def process_image_with_pollinations(image_data: bytes, filename: str) -> dict[str, Any]:
-    """Process an image using pollinations.ai vision model."""
+    """Process an image using Pollinations chat-completions vision."""
     try:
         logger.debug(f"Processing image: {filename}")
         async with httpx.AsyncClient() as client:
-            files = {
-                "image": (filename, image_data, "image/jpeg")
+            mime_type = (
+                mimetypes.guess_type(filename)[0]
+                or "image/jpeg"
+            )
+            encoded = base64.b64encode(image_data).decode("ascii")
+            data_url = f"data:{mime_type};base64,{encoded}"
+            headers = {
+                "Content-Type": "application/json",
+            }
+            if POLLINATIONS_API_KEY:
+                headers["Authorization"] = f"Bearer {POLLINATIONS_API_KEY}"
+
+            payload = {
+                "model": POLLINATIONS_VISION_MODEL,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": (
+                                    "Analyze this business asset image. Return concise JSON with: "
+                                    "asset_type, business_signals, extracted_business_info "
+                                    "(business_name, phone, email, address, hours, services_or_items, offers, prices), "
+                                    "recommended_pages, recommended_features, trust_or_compliance_notes, "
+                                    "visual_brand_cues, planner_notes."
+                                ),
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": data_url,
+                                },
+                            },
+                        ],
+                    }
+                ],
             }
 
             logger.debug(f"Sending request to pollinations API for {filename}")
             response = await client.post(
                 POLLINATIONS_VISION_URL,
-                files=files,
+                headers=headers,
+                json=payload,
                 timeout=30.0,
             )
 
@@ -71,9 +130,11 @@ async def process_image_with_pollinations(image_data: bytes, filename: str) -> d
                     result = {"text_response": response.text}
                     logger.warning(f"JSON parsing failed for {filename}, using text response: {e}")
 
+                parsed_result = extract_pollinations_vision_payload(result)
+
                 return {
                     "image": filename,
-                    "parsed": result,
+                    "parsed": parsed_result,
                     "status": "success",
                 }
 
@@ -85,6 +146,7 @@ async def process_image_with_pollinations(image_data: bytes, filename: str) -> d
                 "image": filename,
                 "error": f"API request failed with status {response.status_code}: {error_text}",
                 "status": "error",
+                "error_code": f"http_{response.status_code}",
             }
 
     except Exception as e:
@@ -93,7 +155,59 @@ async def process_image_with_pollinations(image_data: bytes, filename: str) -> d
             "image": filename,
             "error": str(e),
             "status": "error",
+            "error_code": "exception",
         }
+
+
+def extract_pollinations_vision_payload(result: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        return {"text_response": str(result or "")}
+
+    content: str | None = None
+    choices = result.get("choices")
+    if isinstance(choices, list) and choices:
+        message = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
+        if isinstance(message, dict):
+            raw_content = message.get("content")
+            if isinstance(raw_content, str):
+                content = raw_content
+            elif isinstance(raw_content, list):
+                text_parts: list[str] = []
+                for item in raw_content:
+                    if isinstance(item, dict):
+                        text_value = item.get("text")
+                        if isinstance(text_value, str):
+                            text_parts.append(text_value)
+                if text_parts:
+                    content = "\n".join(text_parts)
+
+    if not content:
+        content = (
+            result.get("response")
+            if isinstance(result.get("response"), str)
+            else result.get("text")
+        )
+
+    if not isinstance(content, str) or not content.strip():
+        return {"text_response": json.dumps(result)}
+
+    text = content.strip()
+    fenced_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
+    if fenced_match:
+        text = fenced_match.group(1)
+    else:
+        object_match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+        if object_match:
+            text = object_match.group(0)
+
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+
+    return {"text_response": content}
 
 
 @app.on_event("startup")
@@ -142,6 +256,34 @@ def frontend_preview() -> FileResponse:
 def normalize_asset_extraction_payload(item: dict[str, Any]) -> dict[str, Any]:
     logger.debug(f"Normalizing asset extraction payload: {item.get('image', 'unknown')}")
     try:
+        status = str(item.get("status") or "unknown")
+        if status != "success":
+            error_message = str(item.get("error") or "Image extraction failed.")
+            result = {
+                "image": item.get("image", ""),
+                "asset_type": "unprocessed",
+                "processing_status": "unavailable",
+                "business_signals": [],
+                "extracted_business_info": {
+                    "services_or_items": [],
+                    "offers": [],
+                    "prices": [],
+                },
+                "recommended_pages": [],
+                "recommended_features": [],
+                "trust_or_compliance_notes": [],
+                "visual_brand_cues": [],
+                "planner_notes": error_message,
+                "external_failure": {
+                    "service": "pollinations_vision",
+                    "status": status,
+                    "error": error_message,
+                    "error_code": str(item.get("error_code") or "unknown"),
+                },
+            }
+            logger.debug(f"Normalized failed payload for {item.get('image', 'unknown')}: {result}")
+            return result
+
         parsed = dict((item.get("parsed", {}) or {}))
         info = dict((parsed.get("extracted_business_info", {}) or {}))
         info["services_or_items"] = normalize_string_list(info.get("services_or_items"))
@@ -157,6 +299,7 @@ def normalize_asset_extraction_payload(item: dict[str, Any]) -> dict[str, Any]:
         parsed["extracted_business_info"] = info
         result = {
             "image": item.get("image", ""),
+            "processing_status": "success",
             **parsed,
         }
         logger.debug(f"Normalized payload for {item.get('image', 'unknown')}: {result}")
@@ -165,7 +308,7 @@ def normalize_asset_extraction_payload(item: dict[str, Any]) -> dict[str, Any]:
         logger.exception(f"Error normalizing asset extraction payload: {e}")
         return {
             "image": item.get("image", ""),
-            "asset_type": "image",
+            "asset_type": "unprocessed",
             "business_signals": [],
             "extracted_business_info": {
                 "services_or_items": [],
@@ -177,6 +320,7 @@ def normalize_asset_extraction_payload(item: dict[str, Any]) -> dict[str, Any]:
             "trust_or_compliance_notes": [],
             "visual_brand_cues": [],
             "planner_notes": str(item.get("error") or "Extraction normalization failed."),
+            "processing_status": "unavailable",
         }
 
 
@@ -273,7 +417,16 @@ def extract_numeric_values(text: str) -> list[float | int]:
 def build_fallback_graph_execution(
     profile: dict[str, Any],
     asset_extractions: list[dict[str, Any]],
+    planner_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    planner_status = planner_status or {}
+    reasoning_notes = [
+        "Agent graph fallback mode was used because the external planning model failed.",
+    ]
+    if planner_status.get("degraded"):
+        reasoning_notes.append(
+            f"Planner entered degraded mode: {planner_status.get('reason') or 'external planner unavailable.'}"
+        )
     return {
         "final_state": {
             "business_input": profile,
@@ -289,9 +442,7 @@ def build_fallback_graph_execution(
             "critique_reports": [],
             "design_spec": None,
             "qa_notes": [],
-            "reasoning_notes": [
-                "Agent graph fallback mode was used because the external planning model failed.",
-            ],
+            "reasoning_notes": reasoning_notes,
             "reflection_report": None,
             "uncertainty_score": 0.0,
             "debate_outcome": None,
@@ -309,6 +460,13 @@ def asset_signals_from_extractions(extractions: list[dict[str, Any]]) -> str:
     for item in extractions:
         lines.append(f"File: {item.get('image', 'uploaded-image')}")
         lines.append(f"Asset type: {item.get('asset_type', 'image')}")
+        processing_status = str(item.get("processing_status") or "unknown")
+        if processing_status != "success":
+            lines.append(f"- Extraction status: {processing_status}")
+            planner_notes = str(item.get("planner_notes") or "").strip()
+            if planner_notes:
+                lines.append(f"- Extraction failure: {planner_notes[:240]}")
+            continue
         for signal in item.get("business_signals", [])[:6]:
             lines.append(f"- Signal: {signal}")
 
@@ -355,6 +513,31 @@ async def extract_request_payload(request: Request, payload_form: str | None) ->
         return {}
 
 
+def collect_external_failures(
+    normalized_extractions: list[dict[str, Any]],
+    planner_status: dict[str, Any],
+) -> list[dict[str, Any]]:
+    failures: list[dict[str, Any]] = []
+    for item in normalized_extractions:
+        failure = item.get("external_failure")
+        if isinstance(failure, dict):
+            failures.append(
+                {
+                    "image": item.get("image", ""),
+                    **failure,
+                }
+            )
+    for error in planner_status.get("errors", []):
+        failures.append(
+            {
+                "service": "pollinations_generate",
+                "status": "error",
+                "error": error,
+            }
+        )
+    return failures
+
+
 @app.post("/generate-buildspec")
 async def generate_buildspec(
     request: Request,
@@ -362,6 +545,8 @@ async def generate_buildspec(
     files: list[UploadFile] | None = File(default=None),
 ) -> dict[str, Any]:
     parsed_payload = await extract_request_payload(request, payload)
+    planner = ModelJsonPlanner("phi3:mini")
+    planner.begin_request()
 
     logger.info("Received generate_buildspec request")
     logger.debug(f"Request payload: {parsed_payload}")
@@ -434,22 +619,38 @@ async def generate_buildspec(
                         for item in normalized_extractions
                     ],
                 },
-                planner=json_planner,
+                planner=planner,
             )
         except Exception as graph_error:
             logger.exception(f"Agent graph failed, using fallback graph execution: {graph_error}")
+            planner_status = planner.get_health_status()
             agent_state = build_fallback_graph_execution(
                 profile,
                 normalized_extractions,
+                planner_status,
             )
+
+        planner_status = planner.get_health_status()
+        external_failures = collect_external_failures(
+            normalized_extractions,
+            planner_status,
+        )
+        vision_mode = (
+            "unavailable"
+            if any(item.get("processing_status") != "success" for item in normalized_extractions)
+            else ("unused" if not normalized_extractions else "pollinations_vision")
+        )
 
         logger.info("Successfully processed generate_buildspec request")
         return {
-            "source": "local-qwen-agent-system",
+            "source": "pollinations-agent-system",
             "assetSignals": asset_signals,
             "assetExtractions": normalized_extractions,
             "buildSpec": build_spec,
             "graphExecution": agent_state,
+            "plannerMode": planner_status.get("mode", "external_pollinations"),
+            "visionMode": vision_mode,
+            "externalFailures": external_failures,
         }
     except Exception as e:
         logger.exception(f"Error in generate_buildspec: {e}")

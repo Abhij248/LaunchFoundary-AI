@@ -905,54 +905,6 @@ function renderTimeline(spec) {
     .join("");
 }
 
-function renderSpec(spec) {
-  const featureCards = spec.includedFeatures
-    .map(
-      (feature) => `
-        <article class="feature-card">
-          <strong>${feature.label}</strong>
-          <p>${feature.reason}</p>
-          <div class="chip-row">
-            <span class="chip">Impact: ${feature.impact}</span>
-            <span class="chip">Complexity: ${feature.complexity}</span>
-          </div>
-        </article>
-      `,
-    )
-    .join("");
-  const skipped = spec.skippedFeatures.length
-    ? spec.skippedFeatures
-        .map(
-          (feature) => `
-            <article class="feature-card">
-              <strong>Skipped: ${feature.label}</strong>
-              <p>${feature.reason}</p>
-            </article>
-          `,
-        )
-        .join("")
-    : `<article class="feature-card"><strong>No critical skips</strong><p>The input had enough information for the selected workflow.</p></article>`;
-
-  document.querySelector("#specCards").innerHTML = `
-    <article class="metric-card">
-      <strong>${spec.business.name}</strong>
-      <p>${spec.business.vertical.replaceAll("_", " ")} · ${spec.business.riskLevel} · ${Math.round(spec.business.confidence * 100)}% confidence</p>
-      <div class="chip-row">${spec.pages.map((page) => `<span class="chip">${page}</span>`).join("")}</div>
-    </article>
-    ${featureCards}
-    ${skipped}
-  `;
-  document.querySelector("#specJson").textContent = JSON.stringify(spec, null, 2);
-}
-
-function renderWebsite(spec) {
-  renderWebsiteDynamic(spec, state.designSpec || generateDesignSpec(spec));
-}
-
-function renderRestaurantWebsite(spec, visual) {
-  renderWebsiteDynamic(spec, state.designSpec || generateDesignSpec(spec));
-}
-
 function heroCopy(spec) {
   if (spec.business.vertical === "clinic") {
     return "A patient-ready digital front desk with appointments, intake, trust signals, and compliance-aware language.";
