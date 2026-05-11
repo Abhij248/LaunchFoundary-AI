@@ -25,7 +25,6 @@ class ModelJsonPlanner:
         self.model_name = (
             model_name
         )
-        # Pollinations API endpoint
         self.pollinations_url = "https://pollinations.ai/api/generate"
 
     def generate_model(
@@ -104,10 +103,8 @@ class ModelJsonPlanner:
         prompt: str,
         max_new_tokens: int = 500,
     ) -> str:
-        # Using Pollinations API instead of Ollama
         try:
             with httpx.Client() as client:
-                # For better compatibility with Pollinations API, we'll use a more standard approach
                 response = client.post(
                     self.pollinations_url,
                     json={
@@ -120,14 +117,12 @@ class ModelJsonPlanner:
                 )
                 response.raise_for_status()
                 result = response.json()
-                # Handle different response formats from Pollinations
                 if isinstance(result, dict):
-                    return result.get("response", result.get("text", ""))
-                return str(result)
+                    return result.get("response", result.get("text", "{}")) or "{}"
+                return str(result) if str(result).strip() else "{}"
         except Exception as e:
-            # Fallback to a default response if API fails
             print(f"Pollinations API error: {e}")
-            return "Default response due to API failure"
+            return "{}"
 
 
 def parse_json_object(

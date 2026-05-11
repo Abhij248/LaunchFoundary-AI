@@ -255,6 +255,34 @@ def extract_numeric_values(text: str) -> list[float | int]:
         return []
 
 
+def build_fallback_graph_execution(profile: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "final_state": {
+            "business_input": profile,
+            "uploaded_asset_paths": [],
+            "asset_extractions": [],
+            "business_profile": None,
+            "requirements_spec": None,
+            "strategy_hypotheses": [],
+            "revision_iteration": 0,
+            "candidate_history": [],
+            "critique_history": [],
+            "design_candidates": [],
+            "critique_reports": [],
+            "design_spec": None,
+            "qa_notes": [],
+            "reasoning_notes": [
+                "Agent graph fallback mode was used because the external planning model failed.",
+            ],
+            "reflection_report": None,
+            "uncertainty_score": 0.0,
+            "debate_outcome": None,
+            "simulation_report": None,
+        },
+        "events": [],
+    }
+
+
 @app.post("/generate-buildspec")
 async def generate_buildspec(payload: dict[str, Any]) -> dict[str, Any]:
     logger.info("Received generate_buildspec request")
@@ -305,14 +333,18 @@ async def generate_buildspec(payload: dict[str, Any]) -> dict[str, Any]:
         logger.debug(f"Generated build spec: {build_spec}")
 
         logger.debug("Running agent graph...")
-        agent_state = run_agent_graph(
-            {
-                "business_input": profile,
-                "uploaded_asset_paths": [],
-                "asset_extractions": [],
-            },
-            planner=json_planner,
-        )
+        try:
+            agent_state = run_agent_graph(
+                {
+                    "business_input": profile,
+                    "uploaded_asset_paths": [],
+                    "asset_extractions": [],
+                },
+                planner=json_planner,
+            )
+        except Exception as graph_error:
+            logger.exception(f"Agent graph failed, using fallback graph execution: {graph_error}")
+            agent_state = build_fallback_graph_execution(profile)
 
         logger.info("Successfully processed generate_buildspec request")
         return {
