@@ -1,3 +1,9 @@
+let activePageIndex = 0;
+
+window.latestSpec = null;
+window.latestDesignSpec = null;
+window.latestRestaurant = null;
+
 const presets = {
   restaurant: {
     name: "Bella Napoli",
@@ -132,6 +138,7 @@ let state = {
 
   timelineEvents: [],
   graphEvents: [],
+  graphStatus: null,
 
   clarificationQuestions: [],
   pendingClarification: null,
@@ -139,6 +146,16 @@ let state = {
   isGenerating: false,
   resolveClarification: null,
 };
+
+function getBusinessProfileInput() {
+  return {
+    name: document.querySelector("#businessName").value.trim(),
+    location: document.querySelector("#businessLocation").value.trim(),
+    goal: document.querySelector("#businessGoal").value,
+    contact_email: document.querySelector("#businessEmail").value.trim(),
+    details: document.querySelector("#businessDetails").value,
+  };
+}
 
 function pushTimelineEvent(agent, message, badge = "active") {
   state.timelineEvents.push({
@@ -169,6 +186,7 @@ async function replayGraphEvents(events) {
         "No graph events were returned.",
         "Build spec and website rendering are still active.",
         "Uploaded images, if any, were processed through the backend extraction path.",
+        state.graphStatus?.error || "Planner graph was replaced with fallback execution.",
       ],
     });
     return;
@@ -198,29 +216,64 @@ async function replayGraphEvents(events) {
         );
         break;
 
-      case "requirements":
+      case "requirements": {
+
+        const requirements =
+          payload?.requirements_spec ||
+          payload;
+
+        const pageCount =
+          (
+            requirements?.required_pages ||
+            []
+          ).length;
+
+        const workflowCount =
+          (
+            requirements?.required_workflows ||
+            []
+          ).length;
+
         pushTimelineEvent(
           "Requirements Agent",
-          `Planned ${(payload?.required_pages || []).length} pages and ${(payload?.required_workflows || []).length} workflows.`,
+          `Planned ${pageCount} pages and ${workflowCount} workflows.`,
           "researched",
         );
-        break;
 
-      case "strategy_hypotheses":
+        break;
+      }
+
+      case "strategy_hypotheses": {
+
+        const strategies =
+          payload?.strategies ||
+          payload ||
+          [];
+
         pushTimelineEvent(
           "Strategy Agent",
-          `Generated ${(payload || []).length || (payload?.strategies || []).length || 0} competing behavioural strategies.`,
+          `Generated ${strategies.length} competing behavioural strategies.`,
           "thinking",
         );
-        break;
 
-      case "design_candidates":
+        break;
+      }
+
+      case "design_candidates": {
+
+        const candidates =
+          payload?.candidates ||
+          payload ||
+          [];
+
         pushTimelineEvent(
           "Design Agent",
-          `Created ${(payload || []).length || (payload?.candidates || []).length || 0} adaptive design candidates.`,
+          `Created ${candidates.length} adaptive design candidates.`,
           "planned",
         );
+
         break;
+      }
 
       case "critique":
         pushTimelineEvent(
@@ -1084,9 +1137,6 @@ async function runDemo() {
   try {
     state.timelineEvents = [];
     state.graphEvents = [];
-    state.assetExtractions = [];
-    state.amdInsights = null;
-
     document
       .querySelectorAll(
         ".graph-node",
@@ -1122,28 +1172,8 @@ async function runDemo() {
               "application/json",
           },
           body: JSON.stringify({
-            business_input: {
-              name:
-                document.querySelector(
-                  "#businessName",
-                ).value,
-              location:
-                document.querySelector(
-                  "#businessLocation",
-                ).value,
-              goal:
-                document.querySelector(
-                  "#businessGoal",
-                ).value,
-              contact_email:
-                document.querySelector(
-                  "#businessEmail",
-                ).value,
-              details:
-                document.querySelector(
-                  "#businessDetails",
-                ).value,
-            },
+            business_input: getBusinessProfileInput(),
+            asset_extractions: state.assetExtractions,
           }),
         },
       );
@@ -1164,6 +1194,12 @@ async function runDemo() {
 
     state.graphEvents =
       result?.graphExecution?.events || [];
+    state.graphStatus =
+      result?.graphStatus ||
+      {
+        status: result?.graphExecution?.status || "completed",
+        error: result?.graphExecution?.graph_error || "",
+      };
 
     state.assetExtractions =
       result?.assetExtractions || [];
@@ -1188,6 +1224,15 @@ async function runDemo() {
       generateDesignSpec(
         state.spec,
       );
+
+    renderGraphStatusBanner();
+    if (state.graphStatus?.status === "fallback") {
+      pushTimelineEvent(
+        "System",
+        state.graphStatus.error || "Planner graph switched to fallback mode.",
+        "warning",
+      );
+    }
 
     await replayGraphEvents(
       state.graphEvents,
@@ -1306,57 +1351,65 @@ document.querySelector("#businessAssets").addEventListener("change", async (even
 });
 
 document.querySelector("#extractAssets").addEventListener("click", () => {
-  if (!state.assets.length) {
-    document.querySelector("#assetExtraction").textContent = "Upload at least one image before extraction.";
-    return;
-  }
-  state.extractedAssetText = extractAssetSignals(state.assets);
-  document.querySelector("#assetExtraction").textContent = state.extractedAssetText;
-  const details = document.querySelector("#businessDetails");
-  if (!details.value.includes("Extracted asset signals:")) {
-    details.value = `${details.value.trim()}\n\n${state.extractedAssetText}`;
-  }
+  void extractAssetsFromBackend();
 });
 
-document.querySelector("#runAmdAssets").addEventListener("click", async () => {
+async function extractAssetsFromBackend() {
   const status = document.querySelector("#assetExtraction");
   const fileInput = document.querySelector("#businessAssets");
   const files = [...(fileInput.files || [])];
-
-  const profile = {
-    name: document.querySelector("#businessName").value.trim(),
-    location: document.querySelector("#businessLocation").value.trim(),
-    goal: document.querySelector("#businessGoal").value,
-    contact_email: document.querySelector("#businessEmail").value.trim(),
-  };
+  const profile = getBusinessProfileInput();
 
   try {
-    status.textContent = files.length
-      ? `Uploading ${files.length} image${files.length === 1 ? "" : "s"} to the backend for extraction...`
-      : "Generating from business details only...";
-
-    const endpoint = "/generate-buildspec";
-    const baseBusinessDetails = document.querySelector("#businessDetails").value;
+    if (!files.length) {
+      status.textContent = "Upload at least one image before extraction.";
+      return;
+    }
+    status.textContent = `Uploading ${files.length} image${files.length === 1 ? "" : "s"} for asset extraction...`;
 
     const payload = await requestAmdBuildSpec(
-      endpoint,
+      "/extract-assets",
       profile,
-      baseBusinessDetails,
+      profile.details,
       files,
     );
 
-    await applyAmdPayload(payload, "Local pollinations.ai vision model");
-    showPanel("reasoning");
+    state.assetExtractions = payload.assetExtractions || [];
+    state.extractedAssetText = payload.assetSignals || "";
+    state.amdInsights = buildAmdInsights(state.assetExtractions);
+    status.textContent =
+      payload.assetSignals ||
+      "Asset extraction completed, but no strong signals were returned.";
   } catch (error) {
     status.textContent =
       [
-        `Local processing failed: ${error.message}`,
-        `Endpoint: ${"/generate-buildspec"}`,
+        `Asset extraction failed: ${error.message}`,
+        `Endpoint: ${"/extract-assets"}`,
         `Asset count: ${files.length}`,
         "Check that the server is running and the pollinations.ai API is accessible.",
       ].join("\n\n");
-    console.error("Local processing failed", { error });
+    console.error("Asset extraction failed", { error });
   }
+}
+
+function renderGraphStatusBanner() {
+  const host = document.querySelector("#graphStatusBanner");
+  if (!host) return;
+  const status = state.graphStatus;
+  if (!status?.status || status.status === "completed") {
+    host.innerHTML = "";
+    return;
+  }
+  host.innerHTML = `
+    <div class="graph-status-banner warning">
+      <strong>Planner fallback mode</strong>
+      <p>${status.error || "The graph did not converge cleanly, so fallback execution was used."}</p>
+    </div>
+  `;
+}
+
+document.querySelector("#runAmdAssets").addEventListener("click", () => {
+  void extractAssetsFromBackend();
 });
 
 document.querySelector("#clearAssets").addEventListener("click", () => {
@@ -1611,7 +1664,7 @@ function mergeAmdPayloads(profile, businessDetails, payloads) {
 function buildCombinedAssetSignals(extractions) {
   const lines = ["Extracted asset signals:"];
   extractions.forEach((item) => {
-    const parsed = item?.parsed || item || {};
+    const parsed = item.parsed || item || {};
     const info = parsed.extracted_business_info || {};
     lines.push(`File: ${displayAssetName(item.image)}`);
     lines.push(`Asset type: ${parsed.asset_type || "unknown"}`);
@@ -1929,16 +1982,13 @@ function renderSpecDynamic(spec, designSpec) {
 function renderWebsiteDynamic(spec, designSpec) {
   const restaurant = buildRestaurantExperienceData();
   const visual = designAwareVisual(spec, designSpec);
+
   const pages =
-    (designSpec.pages && designSpec.pages.length)
-      ? designSpec.pages
-      : [
-          {
-            name: "Home",
-            pageType: "home",
-            sections: [],
-          },
-        ];
+    designSpec.pages || [];
+
+  const currentPage =
+    pages[activePageIndex] ||
+    pages[0];
 
   const homePage =
     pages.find(
@@ -1968,32 +2018,30 @@ function renderWebsiteDynamic(spec, designSpec) {
     });
 
   const pageSections =
-    bodySections
-      .map((section) =>
-        renderDesignSection(
-          section,
+    currentPage
+      ? renderDesignPage(
+          currentPage,
           spec,
           designSpec,
           restaurant,
-        ),
-      )
-      .join("");
+        )
+      : "";
 
-  const additionalPages =
-    pages
-      .filter(
-        (page) =>
-          page !== homePage,
-      )
-      .map((page) =>
-        renderDesignPage(
-          page,
-          spec,
-          designSpec,
-          restaurant,
-        ),
-      )
-      .join("");
+  // const additionalPages =
+  //   pages
+  //     .filter(
+  //       (page) =>
+  //         page !== homePage,
+  //     )
+  //     .map((page) =>
+  //       renderDesignPage(
+  //         page,
+  //         spec,
+  //         designSpec,
+  //         restaurant,
+  //       ),
+  //     )
+  //     .join("");
 
   let adaptiveHeroCopy =
     heroSectionCopy(
@@ -2052,6 +2100,10 @@ function renderWebsiteDynamic(spec, designSpec) {
     adaptiveCta =
       "Request Callback";
   }
+
+window.latestSpec = spec;
+window.latestDesignSpec = designSpec;
+window.latestRestaurant = restaurant;
 
   document.querySelector(
     "#sitePreview",
@@ -2186,8 +2238,6 @@ function renderWebsiteDynamic(spec, designSpec) {
     <section class="generated-body">
       ${pageSections}
 
-      ${additionalPages}
-
       ${renderDecisionRationaleBand(
         designSpec,
       )}
@@ -2258,11 +2308,63 @@ function renderDesignSection(section, spec, designSpec, restaurant) {
   }
 }
 
-function renderPageNav(spec, designSpec) {
-  const pageLabels = (designSpec.pages || []).length
-    ? designSpec.pages.map((page) => page.name || page.title || "Page")
-    : spec.pages;
-  return `<div class="website-nav">${pageLabels.map((page) => `<span>${page}</span>`).join("")}</div>`;
+function switchGeneratedPage(index) {
+
+  activePageIndex = index;
+
+  if (
+    window.latestSpec &&
+    window.latestDesignSpec
+  ) {
+
+    renderWebsiteDynamic(
+      window.latestSpec,
+      window.latestDesignSpec,
+    );
+  }
+}
+
+function renderPageNav(
+  spec,
+  designSpec,
+) {
+
+  const pages =
+    (designSpec.pages || []).length
+      ? designSpec.pages
+      : (spec.pages || []).map(
+          (page) => ({
+            name: page,
+          }),
+        );
+
+  return `
+    <div class="website-nav">
+      ${pages
+        .map((page, index) => {
+
+          const label =
+            page.name ||
+            page.title ||
+            "Page";
+
+          const activeClass =
+            index === activePageIndex
+              ? "active"
+              : "";
+
+          return `
+            <button
+              class="nav-pill ${activeClass}"
+              onclick="switchGeneratedPage(${index})"
+            >
+              ${label}
+            </button>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
 }
 
 function renderDesignPage(page, spec, designSpec, restaurant) {
@@ -2522,8 +2624,8 @@ function renderHeroSupportChips(spec, designSpec, restaurant, heroSection) {
     heroType === "hero_trust_banner"
       ? ["Browse before you decide", "Clear pricing", "Local trust signals"]
       : restaurant.offers.length
-        ? restaurant.offers
-        : ["Live ordering enabled"];
+        ? restaurant.offers.slice(0, 2)
+        : restaurant.categories.slice(0, 2).map((category) => `${category} ready to order`);
   return `<div class="chip-row">${chips.map((item) => `<span class="chip offer-chip">${item}</span>`).join("")}</div>`;
 }
 
@@ -2538,7 +2640,8 @@ function heroCardBody(spec, designSpec, restaurant, heroSection) {
   if (heroType === "hero_trust_banner") {
     return "This direction emphasises visual reassurance, richer browsing, and social proof before the final order step.";
   }
-  return "This direction emphasises the strongest commercial signal early, shortens time-to-action, and keeps the ordering path visible.";
+  const offerCount = restaurant.offers.length ? `${restaurant.offers.length} live offer${restaurant.offers.length === 1 ? "" : "s"}` : "menu-first ordering";
+  return `This direction emphasises ${offerCount}, shortens time-to-action, and keeps the ordering path visible.`;
 }
 
 function renderDecisionRationaleBand(designSpec) {
@@ -2583,11 +2686,22 @@ function buildRestaurantExperienceData() {
   let categoryIndex = 1;
 
   state.assetExtractions.forEach((extraction) => {
+
+  console.log(
+    "ASSET EXTRACTION",
+    extraction,
+  );
+
     const parsed = extraction || {};
     const info = parsed.extracted_business_info || {};
     const assetType = parsed.asset_type || "menu";
     const signals = parsed.business_signals || [];
     const services = (info.services_or_items || []).slice(0, 18);
+
+    console.log(
+      "SERVICES",
+      services,
+    );    
     const prices = info.prices || [];
     const categoryName = inferMenuCategory(parsed, assetType, categoryIndex);
     if (categoryName) categories.push(categoryName);
@@ -2598,12 +2712,14 @@ function buildRestaurantExperienceData() {
       .forEach((signal) => offers.push(String(signal)));
 
     services.forEach((service, index) => {
+      const cleanedName = sanitizeMenuLabel(service);
+      if (!cleanedName) return;
       const priceValue = prices[index] ?? prices[0] ?? null;
       items.push({
         id: `${assetType}-${categoryIndex}-${index}`,
-        name: String(service),
+        name: cleanedName,
         category: categoryName,
-        description: buildMenuDescription(service, categoryName, signals),
+        description: buildMenuDescription(cleanedName, categoryName, signals),
         priceLabel: formatMenuPrice(priceValue),
         priceSortValue: getMenuPriceNumber(priceValue),
         visual: state.assets[index % Math.max(state.assets.length, 1)]?.url || "",
@@ -2611,7 +2727,15 @@ function buildRestaurantExperienceData() {
     });
   });
 
+  console.log(
+    "RAW MENU ITEMS",
+    items,
+  );
   const dedupedItems = dedupeMenuItems(items).slice(0, 16);
+  console.log(
+    "DEDUPED ITEMS",
+    dedupedItems,
+  );
   const fallbackItems = dedupedItems.length
     ? dedupedItems
     : [
@@ -2619,7 +2743,7 @@ function buildRestaurantExperienceData() {
         { id: "fallback-2", name: "Veggie Feast", category: "Popular", description: "Customer-friendly menu layout with clear pricing.", priceLabel: "₹249", priceSortValue: 249, visual: state.assets[1]?.url || state.assets[0]?.url || "" },
       ];
 
-  const usableOffers = uniqueCompact(offers, 4);
+  const usableOffers = uniqueCompact(offers.map(sanitizeOfferCopy).filter(Boolean), 4);
   const uniqueCategories = uniqueCompact(categories.filter(Boolean), 5);
   const priceNumbers = fallbackItems.map((item) => item.priceSortValue).filter((value) => Number.isFinite(value));
   const cartTotal = state.cart.reduce((total, item) => total + (item.priceSortValue || 0), 0);
@@ -2649,9 +2773,29 @@ function inferMenuCategory(parsed, assetType, categoryIndex) {
 function buildMenuDescription(itemName, categoryName, signals) {
   const qualifiers = [];
   if (categoryName) qualifiers.push(categoryName);
-  if (signals.length) qualifiers.push(String(signals[0]));
-  qualifiers.push("Fast checkout");
-  return `${qualifiers.slice(0, 2).join(" | ")} | ${itemName}`;
+  if (signals.length) qualifiers.push(compactSignalLabel(String(signals[0])));
+  const prefix = qualifiers.slice(0, 2).filter(Boolean).join(" | ");
+  return prefix ? `${prefix} | Simple online ordering.` : "Simple online ordering.";
+}
+
+function sanitizeMenuLabel(value) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  if (text.length > 48) return "";
+  if (/combo student|drive\/free deals|family pack|bucket deal|meal bundles/i.test(text)) return "";
+  return text;
+}
+
+function sanitizeOfferCopy(value) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  return text.length > 64 ? `${text.slice(0, 61)}...` : text;
+}
+
+function compactSignalLabel(value) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  return text.length > 28 ? `${text.slice(0, 25)}...` : text;
 }
 
 function formatMenuPrice(value) {
@@ -2677,11 +2821,27 @@ function getMenuPriceNumber(value) {
 }
 
 function dedupeMenuItems(items) {
+
   const seen = new Set();
+
   return items.filter((item) => {
-    const key = item.name.trim().toLowerCase();
-    if (seen.has(key)) return false;
+
+    const key = String(
+      item.name || ""
+    )
+      .trim()
+      .toLowerCase();
+
+    if (!key) {
+      return false;
+    }
+
+    if (seen.has(key)) {
+      return false;
+    }
+
     seen.add(key);
+
     return true;
   });
 }

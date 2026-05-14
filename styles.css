@@ -458,10 +458,6 @@ textarea {
   padding-top: 4px;
 }
 
-.generated-page + .generated-page {
-  border-top: 1px solid var(--line);
-  padding-top: 20px;
-}
 
 .generated-page-header strong {
   display: block;
@@ -480,10 +476,23 @@ textarea {
   font-weight: 800;
 }
 
-.website-nav span {
-  padding: 6px 9px;
+.nav-pill {
+  padding: 6px 10px;
   border-radius: 999px;
+  border: 1px solid var(--line);
   background: #eef7f3;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.nav-pill.active {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
+.nav-pill:hover {
+  background: #dff1e9;
 }
 
 .restaurant-topbar {
@@ -1197,6 +1206,21 @@ textarea {
 
   border:
     1px solid rgba(255,255,255,0.08);
+}
+
+.graph-status-banner {
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid #d7c58d;
+  background: #fff8e6;
+  color: #6a4b00;
+  display: grid;
+  gap: 6px;
+}
+
+.graph-status-banner p {
+  margin: 0;
 }
 
 .graph-header {

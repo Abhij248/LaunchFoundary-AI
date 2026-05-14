@@ -160,6 +160,18 @@ class RiskLevel(str, Enum):
     REGULATED = "regulated"
 
 
+class ProvenanceSource(str, Enum):
+    USER_INPUT = "user_input"
+    ASSET_EXTRACTION = "asset_extraction"
+    EXTERNAL_MODEL = "external_model"
+    HEURISTIC_FALLBACK = "heuristic_fallback"
+    LOCAL_FALLBACK = "local_fallback"
+    MEMORY_RETRIEVAL = "memory_retrieval"
+    RULEBOOK = "rulebook"
+    GRAPH_ROUTER = "graph_router"
+    BEHAVIORAL_SYSTEM = "behavioral_system"
+
+
 class WorkflowType(str, Enum):
     ORDER = "order"
     BOOKING = "booking"
@@ -257,6 +269,7 @@ class BusinessProfile(BaseModel):
 
 
 class BusinessProfileInference(BaseModel):
+    
     vertical: Vertical
     subtype: str
     risk_level: RiskLevel
@@ -264,6 +277,45 @@ class BusinessProfileInference(BaseModel):
     evidence_summary: list[str] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)
 
+class CanonicalBusinessIdentity(
+    BaseModel
+):
+    vertical: Vertical
+
+    subtype: str
+
+    risk_level: RiskLevel
+
+    confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+    )
+
+    behavioral_archetypes: list[str] = Field(
+        default_factory=list
+    )
+
+    dominant_behavior_pattern: str = "unknown"
+
+    trust_model: str = "standard"
+
+    conversion_model: str = "standard"
+
+    primary_workflow: WorkflowType = (
+        WorkflowType.LEAD
+    )
+
+    allowed_features: list[str] = Field(
+        default_factory=list
+    )
+
+    allowed_pages: list[str] = Field(
+        default_factory=list
+    )
+
+    forbidden_semantics: list[str] = Field(
+        default_factory=list
+    )
 
 class RequirementsSpec(BaseModel):
     required_pages: list[PageType]
@@ -360,6 +412,26 @@ class DesignSpec(BaseModel):
     pages: list[PageSpec]
     decision_rationale: list[str] = Field(default_factory=list)
 
+
+class FinalizationDecision(BaseModel):
+    finalize_now: bool = False
+    selected_candidate_id: str = ""
+    authority: str = "router"
+    reason: str = ""
+    readiness_score: float = Field(
+        ge=0.0,
+        le=1.0,
+        default=0.0,
+    )
+    confidence_weighted_score: float = Field(
+        ge=0.0,
+        le=10.0,
+        default=0.0,
+    )
+    supporting_signals: list[str] = Field(
+        default_factory=list
+    )
+
 class ClarificationQuestion(
     BaseModel
 ):
@@ -370,7 +442,112 @@ class ClarificationQuestion(
     priority: int = 1
 
 
+class BehavioralContext(
+    BaseModel
+):
+    key: str
+
+    trust_requirement: str
+
+    urgency_level: str
+
+    conversion_latency: str
+
+    visual_dependency: str
+
+    operational_complexity: str
+
+    preferred_cta_style: list[str] = Field(
+        default_factory=list
+    )
+
+    trust_signals: list[str] = Field(
+        default_factory=list
+    )
+
+    preferred_sections: list[str] = Field(
+        default_factory=list
+    )
+
+    conversion_risks: list[str] = Field(
+        default_factory=list
+    )
+
+class AgentDecision(
+    BaseModel
+):
+
+    confidence: float = 0.5
+
+    exploration_required: bool = False
+
+    critique_required: bool = False
+
+    simulation_required: bool = False
+
+    memory_retrieval_required: bool = False
+
+    recommend_revision: bool = False
+
+    reasoning: list[str] = Field(
+        default_factory=list
+    )
+
+class CognitiveHealthReport(
+    BaseModel
+):
+
+    exploration_quality: float
+
+    reasoning_diversity: float
+
+    convergence_risk: float
+
+    critique_depth: float
+
+    hallucination_risk: float
+
+    cognition_stability: float
+
+    notes: list[str] = Field(
+        default_factory=list
+    )
+
+class AgentDecision(
+    BaseModel
+):
+
+    confidence: float = 0.5
+
+    exploration_required: bool = False
+
+    critique_required: bool = False
+
+    simulation_required: bool = False
+
+    memory_retrieval_required: bool = False
+
+    recommend_revision: bool = False
+
+    reasoning: list[str] = Field(
+        default_factory=list
+    )
+
 class WebsiteAgentState(BaseModel):
+
+
+    cognitive_health: CognitiveHealthReport | None = None
+
+    agent_decisions: dict[
+        str,
+        AgentDecision
+    ] = Field(
+        default_factory=dict
+    )
+    execution_trace: list[str] = Field(default_factory=list)
+    node_visit_counts: dict[str, int] = Field(default_factory=dict)
+    behavioral_blend: BehavioralBlend | None = None
+    behavioral_contexts: list[BehavioralContext] = Field(default_factory=list)
     simulation_report: SimulationReport | None = None
     debate_outcome: DebateOutcome | None = None
     uncertainty_score: float = 0.0
@@ -380,6 +557,7 @@ class WebsiteAgentState(BaseModel):
     uploaded_asset_paths: list[str] = Field(default_factory=list)
     asset_extractions: list[AssetExtraction] = Field(default_factory=list)
     business_profile: BusinessProfile | None = None
+    business_identity: (CanonicalBusinessIdentity| None) = None
     requirements_spec: RequirementsSpec | None = None
     strategy_hypotheses: list[StrategyHypothesis] = Field(default_factory=list)
     revision_iteration: int = 0
@@ -388,7 +566,187 @@ class WebsiteAgentState(BaseModel):
     design_candidates: list[DesignCandidate] = Field(default_factory=list)
     critique_reports: list[CritiqueReport] = Field(default_factory=list)
     design_spec: DesignSpec | None = None
+    finalization_decision: FinalizationDecision | None = None
     qa_notes: list[str] = Field(default_factory=list)
+    provenance_log: list["CognitiveProvenanceRecord"] = Field(default_factory=list)
+    reasoning_lineage: list["ReasoningLineageEntry"] = Field(default_factory=list)
+    state_artifacts: dict[str, "StateArtifactStatus"] = Field(default_factory=dict)
+    active_fallbacks: list[str] = Field(default_factory=list)
+    memory_query: MemoryQuery | None = None
+    retrieved_memories: list[RetrievedMemory] = Field(default_factory=list)
+    tool_invocations: list["ToolInvocationRecord"] = Field(default_factory=list)
+
+class BehavioralArchetypeWeight(
+    BaseModel
+):
+    archetype: str
+
+    weight: float = Field(
+        ge=0.0,
+        le=1.0,
+    )
+
+    dominance_rank: int = Field(
+        ge=1,
+    )
+
+
+class BehavioralBlend(
+    BaseModel
+):
+    dominant_archetype: str
+
+    secondary_archetypes: list[str] = Field(
+        default_factory=list
+    )
+
+    weights: list[
+        BehavioralArchetypeWeight
+    ] = Field(
+        default_factory=list
+    )
+
+    synthesis_mode: str = ""
+
+    conflict_notes: list[str] = Field(
+        default_factory=list
+    )
+
+
+class CognitiveProvenanceRecord(
+    BaseModel
+):
+    artifact_key: str
+    stage: str
+    source_type: ProvenanceSource
+    summary: str
+    confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+    )
+    fallback_used: bool = False
+    iteration: int = 0
+    supporting_keys: list[str] = Field(
+        default_factory=list
+    )
+
+
+class ReasoningLineageEntry(
+    BaseModel
+):
+    stage: str
+    decision: str
+    confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+    )
+    fallback_used: bool = False
+    inputs: list[str] = Field(
+        default_factory=list
+    )
+    outputs: list[str] = Field(
+        default_factory=list
+    )
+    summary: str = ""
+
+
+class StateArtifactStatus(
+    BaseModel
+):
+    artifact_key: str
+    status: Literal[
+        "empty",
+        "derived",
+        "fallback",
+        "finalized",
+    ] = "derived"
+    source_type: ProvenanceSource
+    confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+    )
+    updated_in_stage: str
+    summary: str = ""
+    lineage_ref: str = ""
+
+
+class MemoryQuery(
+    BaseModel
+):
+    vertical: str = "unknown"
+    subtype: str = "general"
+    risk_level: str = "standard"
+    primary_workflow: str = "lead"
+    behavioral_archetypes: list[str] = Field(
+        default_factory=list
+    )
+    evidence_tags: list[str] = Field(
+        default_factory=list
+    )
+    retrieval_goal: str = ""
+
+
+class RetrievedMemory(
+    BaseModel
+):
+    memory_id: str
+    category: Literal[
+        "vertical_pattern",
+        "workflow_pattern",
+        "behavioral_pattern",
+        "trust_pattern",
+        "offer_pattern",
+    ]
+    title: str
+    summary: str
+    applicability: str = ""
+    recommended_actions: list[str] = Field(
+        default_factory=list
+    )
+    anti_patterns: list[str] = Field(
+        default_factory=list
+    )
+    evidence_tags: list[str] = Field(
+        default_factory=list
+    )
+    relevance: float = Field(
+        ge=0.0,
+        le=1.0,
+    )
+
+
+class MemoryRetrievalBundle(
+    BaseModel
+):
+    query: MemoryQuery
+    memories: list[RetrievedMemory] = Field(
+        default_factory=list
+    )
+    retrieval_confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+        default=0.0,
+    )
+    notes: list[str] = Field(
+        default_factory=list
+    )
+
+
+class ToolInvocationRecord(
+    BaseModel
+):
+    stage: str
+    tool_name: str
+    purpose: str
+    output_keys: list[str] = Field(
+        default_factory=list
+    )
+    summary: str = ""
+    confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+        default=0.0,
+    )
 
 
 WebsiteAgentState.model_rebuild()

@@ -1,11 +1,47 @@
 from __future__ import annotations
+import logging
+logger = logging.getLogger(__name__)
+
 
 from textwrap import dedent
 from typing import Any
 
 from pydantic import ValidationError
 
+from cognitive_state_api import (
+    CognitiveStateAPI,
+)
+
+from cognitive_runtime import (
+    register_node,
+)
+
+from behavioral_blending import (
+    build_behavioral_blend,
+)
+
+from behavioral_requirements import (
+    derive_behavioral_requirements,
+)
+
+from behavioral_validator import (
+    evaluate_behavioral_coherence,
+)
+from agentic_memory import (
+    retrieve_memory_bundle,
+)
+from agentic_cognition_tools import (
+    build_stage_tool_context,
+)
+
+from business_archetype_mapper import (
+     infer_behavioral_archetypes,
+    build_behavioral_contexts,
+)
+
 from agentic_models import (
+    CognitiveHealthReport,
+    AgentDecision,
     SimulationReport,
     WorkflowSimulation,
     DebateOutcome,
@@ -16,14 +52,29 @@ from agentic_models import (
     CritiqueReportSet,
     DesignCandidateSet,
     DesignSpec,
+    FinalizationDecision,
     PageType,
     RequirementsSpec,
     SectionType,
     StrategyHypothesisSet,
     WebsiteAgentState,
     WorkflowType,
+    CanonicalBusinessIdentity,
+    CognitiveProvenanceRecord,
+    ProvenanceSource,
+    ReasoningLineageEntry,
+    StateArtifactStatus,
+    MemoryRetrievalBundle,
+    ToolInvocationRecord,
+    Vertical,
+    RiskLevel,
+    PageType,
 )
-from agentic_planner import ModelJsonPlanner, parse_json_object
+from agentic_planner import (
+    ModelJsonPlanner,
+    PlannerGenerationError,
+    parse_json_object,
+)
 from vertical_rulebooks import VERTICAL_RULEBOOKS
 
 try:
@@ -154,6 +205,411 @@ def infer_risk_level_from_vertical(
     }:
         return "regulated"
     return "standard"
+
+
+def add_reasoning_note(
+    state: WebsiteAgentState,
+    message: str,
+) -> None:
+    state.reasoning_notes.append(
+        message
+    )
+
+
+def record_provenance(
+    state: WebsiteAgentState,
+    artifact_key: str,
+    stage: str,
+    source_type: ProvenanceSource,
+    summary: str,
+    confidence: float,
+    fallback_used: bool = False,
+    supporting_keys: list[str] | None = None,
+) -> None:
+    state.provenance_log.append(
+        CognitiveProvenanceRecord(
+            artifact_key=artifact_key,
+            stage=stage,
+            source_type=source_type,
+            summary=summary,
+            confidence=max(
+                0.0,
+                min(1.0, confidence),
+            ),
+            fallback_used=fallback_used,
+            iteration=state.revision_iteration,
+            supporting_keys=supporting_keys or [],
+        )
+    )
+    if fallback_used:
+        fallback_tag = (
+            f"{stage}:{artifact_key}"
+        )
+        if fallback_tag not in state.active_fallbacks:
+            state.active_fallbacks.append(
+                fallback_tag
+            )
+
+
+def record_lineage(
+    state: WebsiteAgentState,
+    stage: str,
+    decision: str,
+    confidence: float,
+    inputs: list[str],
+    outputs: list[str],
+    summary: str,
+    fallback_used: bool = False,
+) -> None:
+    state.reasoning_lineage.append(
+        ReasoningLineageEntry(
+            stage=stage,
+            decision=decision,
+            confidence=max(
+                0.0,
+                min(1.0, confidence),
+            ),
+            fallback_used=fallback_used,
+            inputs=inputs,
+            outputs=outputs,
+            summary=summary,
+        )
+    )
+
+
+def update_state_artifact(
+    state: WebsiteAgentState,
+    artifact_key: str,
+    stage: str,
+    source_type: ProvenanceSource,
+    confidence: float,
+    summary: str,
+    status: str,
+) -> None:
+    state.state_artifacts[
+        artifact_key
+    ] = StateArtifactStatus(
+        artifact_key=artifact_key,
+        status=status,
+        source_type=source_type,
+        confidence=max(
+            0.0,
+            min(1.0, confidence),
+        ),
+        updated_in_stage=stage,
+        summary=summary,
+        lineage_ref=(
+            f"{stage}:{artifact_key}:"
+            f"{state.revision_iteration}"
+        ),
+    )
+
+
+def artifact_status(
+    state: WebsiteAgentState,
+    artifact_key: str,
+) -> StateArtifactStatus | None:
+    return state.state_artifacts.get(
+        artifact_key
+    )
+
+
+def artifact_confidence(
+    state: WebsiteAgentState,
+    artifact_key: str,
+    fallback: float = 0.0,
+) -> float:
+    artifact = artifact_status(
+        state,
+        artifact_key,
+    )
+    return (
+        artifact.confidence
+        if artifact
+        else fallback
+    )
+
+
+def artifact_used_fallback(
+    state: WebsiteAgentState,
+    artifact_key: str,
+) -> bool:
+    artifact = artifact_status(
+        state,
+        artifact_key,
+    )
+    return bool(
+        artifact
+        and artifact.status == "fallback"
+    )
+
+
+def candidate_decision_scores(
+    state: WebsiteAgentState,
+) -> list[dict[str, Any]]:
+    critique_map = {
+        report.candidate_id: average_critique_score(
+            report
+        )
+        for report in (
+            state.critique_reports or []
+        )
+    }
+    debate_bonus_id = (
+        state.debate_outcome.winning_candidate_id
+        if state.debate_outcome
+        else ""
+    )
+    results: list[dict[str, Any]] = []
+    for candidate in (
+        state.design_candidates
+        or []
+    ):
+        critique_score = critique_map.get(
+            candidate.candidate_id,
+            0.0,
+        )
+        confidence = normalize_confidence(
+            candidate.confidence
+        )
+        debate_bonus = (
+            0.35
+            if debate_bonus_id
+            and debate_bonus_id == candidate.candidate_id
+            else 0.0
+        )
+        realism_factor = (
+            (
+                state.simulation_report.overall_realism_score
+                / 10.0
+            )
+            if state.simulation_report
+            else 0.65
+        )
+        weighted_score = round(
+            (
+                critique_score * 0.55
+                + confidence * 10 * 0.25
+                + realism_factor * 10 * 0.15
+                + debate_bonus * 10 * 0.05
+            ),
+            2,
+        )
+        results.append(
+            {
+                "candidate_id": candidate.candidate_id,
+                "weighted_score": weighted_score,
+                "critique_score": round(
+                    critique_score,
+                    2,
+                ),
+                "confidence": round(
+                    confidence,
+                    2,
+                ),
+                "debate_bonus": round(
+                    debate_bonus,
+                    2,
+                ),
+            }
+        )
+    results.sort(
+        key=lambda item: item[
+            "weighted_score"
+        ],
+        reverse=True,
+    )
+    return results
+
+
+def set_finalization_decision(
+    state: WebsiteAgentState,
+    authority: str,
+    reason: str,
+    supporting_signals: list[str] | None = None,
+) -> FinalizationDecision | None:
+    if not state.design_candidates:
+        return None
+    ranked = candidate_decision_scores(
+        state
+    )
+    if not ranked:
+        return None
+    winner = ranked[0]
+    top_score = winner[
+        "weighted_score"
+    ]
+    runner_up = (
+        ranked[1][
+            "weighted_score"
+        ]
+        if len(ranked) > 1
+        else max(
+            top_score - 0.75,
+            0.0,
+        )
+    )
+    separation = max(
+        top_score - runner_up,
+        0.0,
+    )
+    readiness = round(
+        min(
+            0.98,
+            max(
+                0.35,
+                top_score / 10.0
+                + separation / 12.0
+                - min(
+                    state.uncertainty_score,
+                    0.35,
+                ),
+            ),
+        ),
+        2,
+    )
+    decision = FinalizationDecision(
+        finalize_now=True,
+        selected_candidate_id=winner[
+            "candidate_id"
+        ],
+        authority=authority,
+        reason=reason,
+        readiness_score=readiness,
+        confidence_weighted_score=top_score,
+        supporting_signals=(
+            supporting_signals
+            or []
+        )
+        + [
+            (
+                f"weighted_score="
+                f"{top_score}"
+            ),
+            (
+                f"runner_up_gap="
+                f"{round(separation, 2)}"
+            ),
+        ],
+    )
+    state.finalization_decision = (
+        decision
+    )
+    record_provenance(
+        state,
+        artifact_key="finalization_decision",
+        stage="finalize_authority",
+        source_type=ProvenanceSource.GRAPH_ROUTER,
+        summary=(
+            f"{authority} selected "
+            f"{decision.selected_candidate_id} "
+            "for finalization."
+        ),
+        confidence=readiness,
+        fallback_used=False,
+        supporting_keys=[
+            "design_candidates",
+            "critique_reports",
+            "simulation_report",
+            "debate_outcome",
+        ],
+    )
+    update_state_artifact(
+        state,
+        artifact_key="finalization_decision",
+        stage="finalize_authority",
+        source_type=ProvenanceSource.GRAPH_ROUTER,
+        confidence=readiness,
+        summary=(
+            f"Best-so-far candidate: "
+            f"{decision.selected_candidate_id}"
+        ),
+        status="finalized",
+    )
+    record_lineage(
+        state,
+        stage="finalize_authority",
+        decision="authorized_finalization",
+        confidence=readiness,
+        inputs=[
+            "design_candidates",
+            "critique_reports",
+            "simulation_report",
+            "debate_outcome",
+        ],
+        outputs=[
+            "finalization_decision",
+        ],
+        summary=reason,
+        fallback_used=False,
+    )
+    add_reasoning_note(
+        state,
+        (
+            f"Finalization authority selected "
+            f"{decision.selected_candidate_id} "
+            f"with readiness {decision.readiness_score} "
+            f"and weighted score {decision.confidence_weighted_score}."
+        ),
+    )
+    return decision
+
+
+def external_planner_unhealthy(
+    planner: ModelJsonPlanner,
+) -> bool:
+    return bool(
+        getattr(
+            planner,
+            "failure_count",
+            0,
+        )
+        or getattr(
+            planner,
+            "request_errors",
+            [],
+        )
+    )
+
+
+def invoke_cognition_tools(
+    state: WebsiteAgentState,
+    stage: str,
+) -> dict[str, Any]:
+    context = build_stage_tool_context(
+        state,
+        stage,
+    )
+    for tool_name, payload in context.items():
+        if not isinstance(
+            payload,
+            dict,
+        ):
+            continue
+        output_keys = list(
+            payload.keys()
+        )[:8]
+        state.tool_invocations.append(
+            ToolInvocationRecord(
+                stage=stage,
+                tool_name=tool_name,
+                purpose=(
+                    f"Provide structured cognition context for {stage}."
+                ),
+                output_keys=output_keys,
+                summary=(
+                    f"{tool_name} returned {len(output_keys)} top-level fields."
+                ),
+                confidence=max(
+                    0.45,
+                    1.0 - min(
+                        state.uncertainty_score,
+                        0.5,
+                    ),
+                ),
+            )
+        )
+    return context
 
 
 def build_fallback_strategy_hypotheses(
@@ -429,6 +885,148 @@ def build_fallback_simulation_report(
     )
 
 
+def build_fallback_design_candidates(
+    state: WebsiteAgentState,
+) -> DesignCandidateSet:
+
+    from behavioral_planning import (
+        derive_visual_system_from_archetypes,
+        derive_primary_action_from_archetypes,
+    )
+
+    required_pages = (
+        state.requirements_spec.required_pages
+        if state.requirements_spec
+        else [PageType.HOME]
+    )
+
+    workflow_kind = (
+        state.business_identity.primary_workflow
+        if (
+            state.business_identity
+            and state.business_identity.primary_workflow
+        )
+        else (
+            state.requirements_spec
+            .required_workflows[0]
+            if (
+                state.requirements_spec
+                and state.requirements_spec
+                .required_workflows
+            )
+            else WorkflowType.LEAD
+        )
+    )
+
+    fallback_candidates = []
+
+    strategies = (
+        state.strategy_hypotheses
+        or []
+    )
+
+    if not strategies:
+
+        strategies = (
+            build_fallback_strategy_hypotheses(
+                state
+            ).strategies
+        )
+
+    behavioral_keys = [
+        context.key
+        for context in (
+            state.behavioral_contexts
+            or []
+        )
+    ]
+
+    visual_system = (
+        derive_visual_system_from_archetypes(
+            behavioral_keys
+        )
+    )
+
+    primary_action = (
+        derive_primary_action_from_archetypes(
+            behavioral_keys,
+
+            workflow_kind.value
+            if hasattr(
+                workflow_kind,
+                "value",
+            )
+            else str(
+                workflow_kind
+            ),
+        )
+    )
+
+    for index, strategy in enumerate(
+        strategies[:2],
+        start=1,
+    ):
+
+        candidate_seed = {
+
+            "candidate_id": (
+                f"candidate_{index}"
+            ),
+
+            "rationale": (
+                strategy.core_thesis
+                or (
+                    f"Fallback candidate "
+                    f"{index} aligned to "
+                    "the strongest "
+                    "available strategy."
+                )
+            ),
+
+            "confidence": max(
+                0.55,
+                strategy.confidence - 0.08,
+            ),
+
+            "visual_system": (
+                visual_system
+            ),
+
+            "primary_action": (
+                primary_action
+            ),
+
+            "pages": [
+                {
+                    "type": (
+                        page_type.value
+                        if isinstance(
+                            page_type,
+                            PageType,
+                        )
+                        else str(
+                            page_type
+                        )
+                    )
+                }
+                for page_type in (
+                    required_pages
+                )
+            ],
+        }
+
+        fallback_candidates.append(
+            normalize_design_candidate(
+                candidate_seed,
+                index,
+                state,
+            )
+        )
+
+    return DesignCandidateSet(
+        candidates=fallback_candidates
+    )
+
 def normalize_business_profile_payload(
     payload: dict,
     state: WebsiteAgentState | None = None,
@@ -595,58 +1193,214 @@ def normalize_business_profile_payload(
         )
     )
 
+    normalized[
+        "behavioral_archetypes"
+    ] = infer_behavioral_archetypes(
+        business_input=" ".join(
+            str(
+                state.business_input.get(
+                    key,
+                    "",
+                )
+            )
+            for key in [
+                "name",
+                "goal",
+                "details",
+                "location",
+            ]
+        ) if state else "",
+
+        vertical=vertical,
+    )
+
+
+    from behavioral_blending import (
+        build_behavioral_blend,
+    )
+
+    blend = build_behavioral_blend(
+        normalized[
+            "behavioral_archetypes"
+        ]
+    )
+
+    normalized[
+        "behavioral_blend"
+    ] = blend.model_dump()
+
+    normalized[
+        "behavioral_contexts"
+    ] = [
+        context.model_dump()
+        for context in build_behavioral_contexts(
+            normalized[
+                "behavioral_archetypes"
+            ]
+        )
+    ]
+
     normalized.setdefault(
         "confidence",
         0.8,
     )
 
+    normalized[
+        "behavioral_archetypes"
+    ] = infer_behavioral_archetypes(
+        business_input=" ".join(
+            str(
+                state.business_input.get(
+                    key,
+                    "",
+                )
+            )
+            for key in [
+                "name",
+                "goal",
+                "details",
+                "location",
+            ]
+        ) if state else "",
+
+        vertical=vertical,
+    )
+
+    normalized.setdefault(
+        "behavioral_archetypes",
+        []
+    )
+
     return normalized
+
+def remove_forbidden_semantics(
+    values: list[str],
+    state: WebsiteAgentState,
+) -> list[str]:
+
+    if (
+        not state.business_identity
+        or not state.business_identity
+        .forbidden_semantics
+    ):
+        return values
+
+    forbidden = {
+        term.lower()
+        for term in (
+            state.business_identity
+            .forbidden_semantics
+        )
+    }
+
+    cleaned = []
+
+    for value in values:
+
+        normalized = str(value)
+
+        lowered = normalized.lower()
+
+        blocked = any(
+            term in lowered
+            for term in forbidden
+        )
+
+        if not blocked:
+            cleaned.append(
+                normalized
+            )
+
+    return cleaned
 
 
 def build_agent_graph(planner: ModelJsonPlanner) -> Any:
     if StateGraph is None:
         raise ImportError("langgraph is not installed yet")
-
+    @register_node("business_profile")
     def business_profile_node(
         state: WebsiteAgentState,
     ) -> WebsiteAgentState:
+        fallback_used = False
+        source_type = ProvenanceSource.EXTERNAL_MODEL
 
         prompt = build_business_profile_prompt(
             state
         )
 
-        raw = planner.generate_text(
-            prompt
-        )
+        try:
 
-        parsed = parse_json_object(
-            raw
-        )
-
-        normalized = (
-            normalize_business_profile_payload(
-                parsed,
-                state,
+            raw = planner.generate_text(
+                prompt
             )
-        )
+
+            parsed = parse_json_object(
+                raw
+            )
+
+            normalized = (
+                normalize_business_profile_payload(
+                    parsed,
+                    state,
+                )
+            )
+
+        except PlannerGenerationError as exc:
+            fallback_used = True
+            source_type = ProvenanceSource.HEURISTIC_FALLBACK
+
+            logger.warning(
+                "Business profile fallback triggered: %s",
+                exc,
+            )
+
+            state.reasoning_notes.append(
+                (
+                    "Business profile generation "
+                    "used deterministic fallback "
+                    "because external reasoning "
+                    "failed."
+                )
+            )
+
+            state.uncertainty_score += 0.15
+
+            normalized = (
+                normalize_business_profile_payload(
+                    {},
+                    state,
+                )
+            )
 
         try:
+
             inferred = (
                 BusinessProfileInference
                 .model_validate(
                     normalized
                 )
             )
+
         except ValidationError:
+            fallback_used = True
+            source_type = ProvenanceSource.HEURISTIC_FALLBACK
+
             fallback_profile = (
                 normalize_business_profile_payload(
                     {},
                     state,
                 )
             )
+
             state.reasoning_notes.append(
-                "Business profile output was incomplete. Used heuristic fallback classification."
+                (
+                    "Business profile output "
+                    "was incomplete. Used "
+                    "heuristic fallback "
+                    "classification."
+                )
             )
+
             inferred = (
                 BusinessProfileInference
                 .model_validate(
@@ -660,57 +1414,416 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                     "name",
                     "Unnamed Business",
                 ),
+
                 location=state.business_input.get(
                     "location",
                     "Unknown",
                 ),
+
                 goal=state.business_input.get(
                     "goal",
                     "increase conversions",
                 ),
+
                 vertical=inferred.vertical,
+
                 subtype=inferred.subtype,
+
                 risk_level=inferred.risk_level,
+
                 audience=inferred.audience,
+
                 evidence_summary=normalize_evidence_summary(
                     inferred.evidence_summary
                 ),
+
                 confidence=normalize_confidence(
                     inferred.confidence
                 ),
             )
         )
-        state.uncertainty_score = (
-            1.0 - state.business_profile.confidence
+
+        state.behavioral_contexts = (
+            build_behavioral_contexts(
+                normalized.get(
+                    "behavioral_archetypes",
+                    [],
+                )
+            )
+        )
+
+        state.behavioral_blend = (
+            build_behavioral_blend(
+                normalized.get(
+                    "behavioral_archetypes",
+                    [],
+                )
+            )
+        )
+
+        behavioral_archetypes = (
+            normalized.get(
+                "behavioral_archetypes",
+                [],
+            )
+        )
+
+        dominant_behavior = (
+            state.behavioral_blend
+            .dominant_archetype
+            if state.behavioral_blend
+            else "unknown"
+        )
+
+        vertical = (
+            state.business_profile.vertical
+        )
+
+        primary_workflow = (
+            WorkflowType.BOOKING
+            if vertical in {
+                Vertical.CLINIC,
+                Vertical.SALON,
+                Vertical.CONSULTANT,
+                Vertical.TUTOR,
+            }
+            else WorkflowType.ORDER
+            if vertical in {
+                Vertical.RESTAURANT,
+                Vertical.CAFE,
+                Vertical.BAKERY,
+            }
+            else WorkflowType.LEAD
+        )
+
+        trust_model = (
+            "high_assurance"
+            if (
+                state.business_profile
+                .risk_level
+                == RiskLevel.REGULATED
+            )
+            else "standard"
+        )
+
+        conversion_model = (
+            "trust_accelerated"
+            if (
+                dominant_behavior
+                == "high_trust_consideration"
+            )
+            else "fast_conversion"
+            if (
+                dominant_behavior
+                == "fast_impulse_conversion"
+            )
+            else "standard"
+        )
+
+        allowed_pages = (
+            [
+                page.value
+                if hasattr(
+                    page,
+                    "value",
+                )
+                else str(page)
+                for page in (
+                    state.requirements_spec.required_pages
+                    if (
+                        state.requirements_spec
+                        and state.requirements_spec.required_pages
+                    )
+                    else [
+                        PageType.HOME,
+                        PageType.CONTACT,
+                    ]
+                )
+            ]
+        )
+
+        forbidden_semantics = (
+            ["medical", "doctor", "patient"]
+            if vertical in {
+                Vertical.RESTAURANT,
+                Vertical.CAFE,
+                Vertical.BAKERY,
+            }
+            else ["menu", "pizza", "reservations"]
+            if vertical == Vertical.CLINIC
+            else []
+        )
+
+        state.business_identity = (
+            CanonicalBusinessIdentity(
+                vertical=vertical,
+
+                subtype=(
+                    state.business_profile
+                    .subtype
+                ),
+
+                risk_level=(
+                    state.business_profile
+                    .risk_level
+                ),
+
+                confidence=(
+                    state.business_profile
+                    .confidence
+                ),
+
+                behavioral_archetypes=(
+                    behavioral_archetypes
+                ),
+
+                dominant_behavior_pattern=(
+                    dominant_behavior
+                ),
+
+                trust_model=trust_model,
+
+                conversion_model=(
+                    conversion_model
+                ),
+
+                primary_workflow=(
+                    primary_workflow
+                ),
+
+                allowed_pages=(
+                    allowed_pages
+                ),
+
+                forbidden_semantics=(
+                    forbidden_semantics
+                ),
+            )
+        )
+
+        state.uncertainty_score = max(
+            state.uncertainty_score,
+            (
+                1.0
+                - state.business_profile.confidence
+            ),
         )
 
         if state.uncertainty_score > 0.4:
+
             state.reasoning_notes.append(
-                "Business classification confidence is low. Expanding planning diversity."
+                (
+                    "Business classification "
+                    "confidence is low. "
+                    "Expanding planning "
+                    "diversity."
+                )
             )
+
+        record_provenance(
+            state,
+            artifact_key="business_profile",
+            stage="business_profile",
+            source_type=source_type,
+            summary=(
+                f"Classified business as {state.business_profile.vertical.value} "
+                f"with subtype {state.business_profile.subtype}."
+            ),
+            confidence=state.business_profile.confidence,
+            fallback_used=fallback_used,
+            supporting_keys=[
+                "business_input",
+                "asset_extractions",
+                "behavioral_archetypes",
+            ],
+        )
+        update_state_artifact(
+            state,
+            artifact_key="business_profile",
+            stage="business_profile",
+            source_type=source_type,
+            confidence=state.business_profile.confidence,
+            summary=(
+                f"{state.business_profile.vertical.value} / "
+                f"{state.business_profile.subtype}"
+            ),
+            status="fallback" if fallback_used else "derived",
+        )
+        record_lineage(
+            state,
+            stage="business_profile",
+            decision="classified_business_identity",
+            confidence=state.business_profile.confidence,
+            inputs=["business_input", "asset_extractions"],
+            outputs=["business_profile", "business_identity", "behavioral_contexts"],
+            summary=(
+                f"Derived business identity using {source_type.value}."
+            ),
+            fallback_used=fallback_used,
+        )
 
         return state
 
+    def memory_retrieval_node(
+        state: WebsiteAgentState,
+    ) -> WebsiteAgentState:
+        bundle: MemoryRetrievalBundle = (
+            retrieve_memory_bundle(
+                state
+            )
+        )
+        state.memory_query = (
+            bundle.query
+        )
+        state.retrieved_memories = list(
+            bundle.memories
+        )
+
+        memory_confidence = (
+            bundle.retrieval_confidence
+            if bundle.memories
+            else 0.35
+        )
+        if bundle.memories:
+            add_reasoning_note(
+                state,
+                (
+                    "Retrieved local planning memory to guide "
+                    "workflow, trust, and offer decisions."
+                ),
+            )
+        else:
+            add_reasoning_note(
+                state,
+                (
+                    "No strong memory matches found. Proceeding "
+                    "with direct evidence and rulebooks."
+                ),
+            )
+
+        for note in bundle.notes[:2]:
+            add_reasoning_note(
+                state,
+                f"Memory note: {note}",
+            )
+
+        record_provenance(
+            state,
+            artifact_key="retrieved_memories",
+            stage="memory_retrieval",
+            source_type=ProvenanceSource.MEMORY_RETRIEVAL,
+            summary=(
+                f"Retrieved {len(bundle.memories)} reusable planning memories "
+                "for this business context."
+            ),
+            confidence=memory_confidence,
+            fallback_used=False,
+            supporting_keys=[
+                "business_profile",
+                "business_identity",
+                "asset_extractions",
+            ],
+        )
+        update_state_artifact(
+            state,
+            artifact_key="retrieved_memories",
+            stage="memory_retrieval",
+            source_type=ProvenanceSource.MEMORY_RETRIEVAL,
+            confidence=memory_confidence,
+            summary=(
+                "Local memory retrieval populated reusable patterns."
+                if bundle.memories
+                else "No strong reusable memory patterns matched."
+            ),
+            status="derived" if bundle.memories else "empty",
+        )
+        record_lineage(
+            state,
+            stage="memory_retrieval",
+            decision="retrieved_reusable_planning_memory",
+            confidence=memory_confidence,
+            inputs=["business_profile", "business_identity", "asset_extractions"],
+            outputs=["memory_query", "retrieved_memories"],
+            summary=(
+                "Matched local workflow and trust patterns to the current business."
+            ),
+            fallback_used=False,
+        )
+
+        return state
+    @register_node("requirements")
     def requirements_node(
         state: WebsiteAgentState,
     ) -> WebsiteAgentState:
+        
+        state.execution_trace.append(
+            "requirements"
+        )
+
+        state.node_visit_counts[
+            "requirements"
+        ] = (
+            state.node_visit_counts.get(
+                "requirements",
+                0,
+            )
+            + 1
+        )
+        fallback_used = False
+        source_type = ProvenanceSource.EXTERNAL_MODEL
+        tool_context = invoke_cognition_tools(
+            state,
+            "requirements",
+        )
 
         prompt = build_requirements_prompt(
-            state
-        )
-
-        raw = planner.generate_text(
-            prompt
-        )
-
-        parsed = parse_json_object(
-            raw
-        )
-
-        normalized = normalize_requirements_payload(
-            parsed,
             state,
+            tool_context,
         )
+
+        try:
+
+            raw = planner.generate_text(
+                prompt
+            )
+
+            parsed = parse_json_object(
+                raw
+            )
+
+            normalized = (
+                normalize_requirements_payload(
+                    parsed,
+                    state,
+                )
+            )
+
+        except PlannerGenerationError as exc:
+            fallback_used = True
+            source_type = ProvenanceSource.HEURISTIC_FALLBACK
+
+            logger.warning(
+                "Requirements fallback triggered: %s",
+                exc,
+            )
+
+            state.reasoning_notes.append(
+                (
+                    "Requirements generation "
+                    "used deterministic fallback "
+                    "because external reasoning "
+                    "failed."
+                )
+            )
+
+            state.uncertainty_score += 0.15
+
+            normalized = (
+                normalize_requirements_payload(
+                    {},
+                    state,
+                )
+            )
 
         state.requirements_spec = (
             RequirementsSpec.model_validate(
@@ -718,25 +1831,137 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
             )
         )
 
-        return state
+        req_confidence = max(
+            0.45,
+            1.0 - min(state.uncertainty_score, 0.55),
+        )
+        record_provenance(
+            state,
+            artifact_key="requirements_spec",
+            stage="requirements",
+            source_type=source_type,
+            summary=(
+                f"Planned {len(state.requirements_spec.required_pages)} pages and "
+                f"{len(state.requirements_spec.required_workflows)} workflows."
+            ),
+            confidence=req_confidence,
+            fallback_used=fallback_used,
+            supporting_keys=[
+                "business_profile",
+                "business_identity",
+                "vertical_rulebook",
+                "retrieved_memories",
+            ],
+        )
+        update_state_artifact(
+            state,
+            artifact_key="requirements_spec",
+            stage="requirements",
+            source_type=source_type,
+            confidence=req_confidence,
+            summary="Operational pages and workflows selected.",
+            status="fallback" if fallback_used else "derived",
+        )
+        record_lineage(
+            state,
+            stage="requirements",
+            decision="planned_requirements",
+            confidence=req_confidence,
+            inputs=["business_profile", "business_identity", "vertical_rulebook", "retrieved_memories"],
+            outputs=["requirements_spec"],
+            summary="Derived workflow and page requirements.",
+            fallback_used=fallback_used,
+        )
 
+        return state
+    @register_node("strategy")
     def strategy_hypothesis_node(
         state: WebsiteAgentState,
     ) -> WebsiteAgentState:
 
+        state.execution_trace.append(
+            "strategy_hypotheses"
+        )
+
+        state.node_visit_counts[
+            "strategy_hypotheses"
+        ] = (
+            state.node_visit_counts.get(
+                "strategy_hypotheses",
+                0,
+            )
+            + 1
+        )
+        fallback_used = False
+        source_type = ProvenanceSource.EXTERNAL_MODEL
+        tool_context = invoke_cognition_tools(
+            state,
+            "strategy_hypotheses",
+        )
+
         prompt = build_strategy_prompt(
-            state
+            state,
+            tool_context,
         )
 
         try:
-            hypotheses = planner.generate_model(
-                prompt,
-                StrategyHypothesisSet,
+
+            raw = planner.generate_text(
+                prompt
             )
-        except ValidationError:
+
+            parsed = parse_json_object(
+                raw
+            )
+
+            hypotheses = (
+                StrategyHypothesisSet
+                .model_validate(
+                    parsed
+                )
+            )
+
+        except PlannerGenerationError as exc:
+            fallback_used = True
+            source_type = ProvenanceSource.HEURISTIC_FALLBACK
+
+            logger.warning(
+                "Strategy fallback triggered: %s",
+                exc,
+            )
+
             state.reasoning_notes.append(
-                "Strategy hypothesis generation failed. Used local fallback strategies."
+                (
+                    "Strategy generation used "
+                    "deterministic fallback "
+                    "because external reasoning "
+                    "failed."
+                )
             )
+
+            state.uncertainty_score += 0.15
+
+            hypotheses = (
+                build_fallback_strategy_hypotheses(
+                    state
+                )
+            )
+
+        except (ValidationError, ValueError):
+            fallback_used = True
+            source_type = ProvenanceSource.LOCAL_FALLBACK
+
+            state.reasoning_notes.append(
+                (
+                    "Strategy hypothesis "
+                    "generation failed. "
+                    "Used local fallback "
+                    "strategies."
+                )
+            )
+
+            state.uncertainty_score += 0.1
+
             hypotheses = (
                 build_fallback_strategy_hypotheses(
                     state
@@ -746,37 +1971,134 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
         state.strategy_hypotheses = (
             hypotheses.strategies
         )
+        strategy_confidence = (
+            sum(item.confidence for item in state.strategy_hypotheses) / max(len(state.strategy_hypotheses), 1)
+        )
+        record_provenance(
+            state,
+            artifact_key="strategy_hypotheses",
+            stage="strategy_hypotheses",
+            source_type=source_type,
+            summary=(
+                f"Generated {len(state.strategy_hypotheses)} strategy hypotheses."
+            ),
+            confidence=strategy_confidence,
+            fallback_used=fallback_used,
+            supporting_keys=[
+                "business_profile",
+                "requirements_spec",
+                "behavioral_contexts",
+                "retrieved_memories",
+            ],
+        )
+        update_state_artifact(
+            state,
+            artifact_key="strategy_hypotheses",
+            stage="strategy_hypotheses",
+            source_type=source_type,
+            confidence=strategy_confidence,
+            summary="Behavioral strategy set ready for layout planning.",
+            status="fallback" if fallback_used else "derived",
+        )
+        record_lineage(
+            state,
+            stage="strategy_hypotheses",
+            decision="generated_competing_strategies",
+            confidence=strategy_confidence,
+            inputs=["business_profile", "requirements_spec", "behavioral_contexts", "retrieved_memories"],
+            outputs=["strategy_hypotheses"],
+            summary="Created competing behavior-led strategies.",
+            fallback_used=fallback_used,
+        )
 
         return state
-
+    @register_node("design")
     def design_candidates_node(
         state: WebsiteAgentState,
     ) -> WebsiteAgentState:
         state.revision_iteration += 1
+        fallback_used = False
+        source_type = ProvenanceSource.EXTERNAL_MODEL
+        tool_context = invoke_cognition_tools(
+            state,
+            "design_candidates",
+        )
 
         prompt = build_design_candidates_prompt(
-            state
-        )
-
-        raw = planner.generate_text(
-            prompt
-        )
-
-        parsed = parse_json_object(
-            raw
-        )
-
-        normalized = normalize_candidate_set_payload(
-            parsed,
             state,
+            tool_context,
         )
 
-        candidates = (
-            DesignCandidateSet.model_validate(
-                normalized
+        try:
+
+            raw = planner.generate_text(
+                prompt,
+                max_new_tokens=700,
             )
-        )
 
+            parsed = parse_json_object(
+                raw
+            )
+
+            normalized = (
+                normalize_candidate_set_payload(
+                    parsed,
+                    state,
+                )
+            )
+
+            candidates = (
+                DesignCandidateSet
+                .model_validate(
+                    normalized
+                )
+            )
+
+        except PlannerGenerationError as exc:
+            fallback_used = True
+            source_type = ProvenanceSource.HEURISTIC_FALLBACK
+
+            logger.warning(
+                "Design candidate fallback triggered: %s",
+                exc,
+            )
+
+            state.reasoning_notes.append(
+                (
+                    "Design candidate generation "
+                    "used deterministic fallback "
+                    "because external reasoning "
+                    "failed."
+                )
+            )
+
+            state.uncertainty_score += 0.15
+
+            candidates = (
+                build_fallback_design_candidates(
+                    state
+                )
+            )
+
+        except (ValidationError, ValueError):
+            fallback_used = True
+            source_type = ProvenanceSource.LOCAL_FALLBACK
+
+            state.reasoning_notes.append(
+                (
+                    "Design candidate generation "
+                    "failed validation. Used "
+                    "fallback design candidates."
+                )
+            )
+
+            state.uncertainty_score += 0.1
+
+            candidates = (
+                build_fallback_design_candidates(
+                    state
+                )
+            )
         state.design_candidates = (
             candidates.candidates
         )
@@ -790,33 +2112,166 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
             }
         )
 
-        return state
+        candidate_confidence = (
+            sum(item.confidence for item in state.design_candidates) / max(len(state.design_candidates), 1)
+        )
+        record_provenance(
+            state,
+            artifact_key="design_candidates",
+            stage="design_candidates",
+            source_type=source_type,
+            summary=(
+                f"Prepared {len(state.design_candidates)} design candidates "
+                f"for iteration {state.revision_iteration}."
+            ),
+            confidence=candidate_confidence,
+            fallback_used=fallback_used,
+            supporting_keys=[
+                "strategy_hypotheses",
+                "requirements_spec",
+                "asset_extractions",
+                "retrieved_memories",
+            ],
+        )
+        update_state_artifact(
+            state,
+            artifact_key="design_candidates",
+            stage="design_candidates",
+            source_type=source_type,
+            confidence=candidate_confidence,
+            summary="Candidate layouts available for critique.",
+            status="fallback" if fallback_used else "derived",
+        )
+        record_lineage(
+            state,
+            stage="design_candidates",
+            decision="generated_layout_candidates",
+            confidence=candidate_confidence,
+            inputs=["strategy_hypotheses", "requirements_spec", "asset_extractions", "retrieved_memories"],
+            outputs=["design_candidates", "candidate_history"],
+            summary="Expanded strategies into renderable candidate layouts.",
+            fallback_used=fallback_used,
+        )
 
+        return state
+    @register_node("critique")
     def critique_node(
         state: WebsiteAgentState,
     ) -> WebsiteAgentState:
+        
 
-        prompt = build_critique_prompt(
-            state
+        cognition = (
+            CognitiveStateAPI(state)
         )
 
-        raw = planner.generate_text(
-            prompt
+        state.execution_trace.append(
+            "critique"
         )
 
-        parsed = parse_json_object(
-            raw
-        )
-
-        normalized = normalize_critique_set_payload(
-            parsed
-        )
-
-        critiques = (
-            CritiqueReportSet.model_validate(
-                normalized
+        state.node_visit_counts[
+            "critique"
+        ] = (
+            state.node_visit_counts.get(
+                "critique",
+                0,
             )
+            + 1
         )
+        fallback_used = False
+        source_type = ProvenanceSource.EXTERNAL_MODEL
+        tool_context = invoke_cognition_tools(
+            state,
+            "critique",
+        )
+    
+        prompt = build_critique_prompt(
+            state,
+            tool_context,
+        )
+
+        try:
+
+            raw = planner.generate_text(
+                prompt,
+                max_new_tokens=650,
+            )
+
+            parsed = parse_json_object(
+                raw
+            )
+
+            normalized = (
+                normalize_critique_set_payload(
+                    parsed
+                )
+            )
+
+            critiques = (
+                CritiqueReportSet
+                .model_validate(
+                    normalized
+                )
+            )
+
+        except PlannerGenerationError as exc:
+            fallback_used = True
+            source_type = ProvenanceSource.HEURISTIC_FALLBACK
+
+            logger.warning(
+                "Critique fallback triggered: %s",
+                exc,
+            )
+
+            state.reasoning_notes.append(
+                (
+                    "Critique generation used "
+                    "deterministic fallback "
+                    "because external reasoning "
+                    "failed."
+                )
+            )
+
+            state.uncertainty_score += 0.15
+
+            critiques = CritiqueReportSet(
+                critiques=[
+                    build_fallback_critique(
+                        candidate,
+                        state,
+                    )
+                    for candidate in (
+                        cognition.get_active_strategy_candidates()
+                        or []
+                    )
+                ]
+            )
+
+        except (ValidationError, ValueError):
+            fallback_used = True
+            source_type = ProvenanceSource.LOCAL_FALLBACK
+
+            state.reasoning_notes.append(
+                (
+                    "Critique generation failed "
+                    "validation. Used fallback "
+                    "critique."
+                )
+            )
+
+            state.uncertainty_score += 0.1
+
+            critiques = CritiqueReportSet(
+                critiques=[
+                    build_fallback_critique(
+                        candidate,
+                        state,
+                    )
+                    for candidate in (
+                        cognition.get_active_strategy_candidates()
+                        or []
+                    )
+                ]
+            )
 
         state.critique_reports = (
             ensure_critiques(
@@ -834,25 +2289,153 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
             }
         )
 
-        return state
+        critique_confidence = max(
+            0.4,
+            1.0 - min(state.uncertainty_score, 0.6),
+        )
+        record_provenance(
+            state,
+            artifact_key="critique_reports",
+            stage="critique",
+            source_type=source_type,
+            summary=(
+                f"Generated {len(state.critique_reports)} critique reports."
+            ),
+            confidence=critique_confidence,
+            fallback_used=fallback_used,
+            supporting_keys=[
+                "design_candidates",
+                "requirements_spec",
+                "asset_extractions",
+                "retrieved_memories",
+            ],
+        )
+        update_state_artifact(
+            state,
+            artifact_key="critique_reports",
+            stage="critique",
+            source_type=source_type,
+            confidence=critique_confidence,
+            summary="Candidate critiques ready for evaluation.",
+            status="fallback" if fallback_used else "derived",
+        )
+        record_lineage(
+            state,
+            stage="critique",
+            decision="evaluated_candidates",
+            confidence=critique_confidence,
+            inputs=["design_candidates", "requirements_spec", "asset_extractions", "retrieved_memories"],
+            outputs=["critique_reports", "critique_history"],
+            summary="Compared candidate tradeoffs and weaknesses.",
+            fallback_used=fallback_used,
+        )
 
+        state.agent_decisions[
+            "critique"
+        ] = AgentDecision(
+
+            confidence=0.68,
+
+            exploration_required=(
+                cognition.get_uncertainty_level() > 0.65
+            ),
+
+            simulation_required=True,
+
+            recommend_revision=(
+                cognition.get_uncertainty_level() > 0.75
+            ),
+
+            reasoning=[
+                (
+                    "Critique agent evaluated "
+                    "candidate stability and "
+                    "exploration sufficiency."
+                )
+            ],
+        )
+        return state
+    
+    @register_node("reflection")
     def reflection_node(
         state: WebsiteAgentState,
     ) -> WebsiteAgentState:
+         
+        cognition = (CognitiveStateAPI(state))
+        
+        state.execution_trace.append(
+            "reflection"
+        )
+
+        state.node_visit_counts[
+            "reflection"
+        ] = (
+            state.node_visit_counts.get(
+                "reflection",
+                0,
+            )
+            + 1
+        )
+        fallback_used = False
+        source_type = ProvenanceSource.EXTERNAL_MODEL
+        tool_context = invoke_cognition_tools(
+            state,
+            "reflection",
+        )
 
         prompt = build_reflection_prompt(
-            state
+            state,
+            tool_context,
         )
 
         try:
-            reflection = planner.generate_model(
-                prompt,
-                ReflectionReport,
+
+            reflection = (
+                planner.generate_model(
+                    prompt,
+                    ReflectionReport,
+                )
             )
-        except ValidationError:
+
+        except PlannerGenerationError as exc:
+            fallback_used = True
+            source_type = ProvenanceSource.HEURISTIC_FALLBACK
+
+            logger.warning(
+                "Reflection fallback triggered: %s",
+                exc,
+            )
+
             state.reasoning_notes.append(
-                "Reflection generation failed. Used local fallback reflection."
+                (
+                    "Reflection generation used "
+                    "deterministic fallback "
+                    "because external reasoning "
+                    "failed."
+                )
             )
+
+            state.uncertainty_score += 0.15
+
+            reflection = (
+                build_fallback_reflection_report(
+                    state
+                )
+            )
+
+        except (ValidationError, ValueError):
+            fallback_used = True
+            source_type = ProvenanceSource.LOCAL_FALLBACK
+
+            state.reasoning_notes.append(
+                (
+                    "Reflection generation failed. "
+                    "Used local fallback reflection."
+                )
+            )
+
+            state.uncertainty_score += 0.1
+
             reflection = (
                 build_fallback_reflection_report(
                     state
@@ -926,21 +2509,145 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
             )
 
-        return state
+        reflection_confidence = max(
+            0.45,
+            1.0 - (reflection.convergence_risk / 12.0),
+        )
+        record_provenance(
+            state,
+            artifact_key="reflection_report",
+            stage="reflection",
+            source_type=source_type,
+            summary="Evaluated planning quality and convergence risk.",
+            confidence=reflection_confidence,
+            fallback_used=fallback_used,
+            supporting_keys=["candidate_history", "critique_history", "reasoning_notes"],
+        )
+        update_state_artifact(
+            state,
+            artifact_key="reflection_report",
+            stage="reflection",
+            source_type=source_type,
+            confidence=reflection_confidence,
+            summary="Reflection report updated.",
+            status="fallback" if fallback_used else "derived",
+        )
+        record_lineage(
+            state,
+            stage="reflection",
+            decision="evaluated_planning_process",
+            confidence=reflection_confidence,
+            inputs=["candidate_history", "critique_history", "reasoning_notes"],
+            outputs=["reflection_report"],
+            summary="Reviewed exploration sufficiency and convergence risk.",
+            fallback_used=fallback_used,
+        )
 
+        state.cognitive_health = (
+            CognitiveHealthReport(
+
+                exploration_quality=(
+                    cognition
+                    .get_reasoning_diversity()
+                ),
+
+                reasoning_diversity=(
+                    cognition
+                    .get_reasoning_diversity()
+                ),
+
+                convergence_risk=(
+                    cognition
+                    .get_convergence_risk()
+                ),
+
+                critique_depth=0.74,
+
+                hallucination_risk=(
+                    cognition
+                    .get_hallucination_risk()
+                ),
+
+                cognition_stability=(
+                    1.0
+                    -
+                    cognition
+                    .get_convergence_risk()
+                ),
+
+                notes=[
+                    (
+                        "Meta-cognitive evaluation "
+                        "computed from runtime state."
+                    )
+                ],
+            )
+        )
+        return state
+    @register_node("debate")
     def debate_node(
         state: WebsiteAgentState,
     ) -> WebsiteAgentState:
+        fallback_used = False
+        source_type = ProvenanceSource.EXTERNAL_MODEL
+        tool_context = invoke_cognition_tools(
+            state,
+            "debate",
+        )
+
+        prompt = build_debate_prompt(
+            state,
+            tool_context,
+        )
 
         try:
-            outcome = planner.generate_model(
-                build_debate_prompt(state),
-                DebateOutcome,
+
+            outcome = (
+                planner.generate_model(
+                    prompt,
+                    DebateOutcome,
+                )
             )
-        except ValidationError:
+
+        except PlannerGenerationError as exc:
+            fallback_used = True
+            source_type = ProvenanceSource.HEURISTIC_FALLBACK
+
+            logger.warning(
+                "Debate fallback triggered: %s",
+                exc,
+            )
+
             state.reasoning_notes.append(
-                "Debate generation failed. Used local fallback debate."
+                (
+                    "Debate generation used "
+                    "deterministic fallback "
+                    "because external reasoning "
+                    "failed."
+                )
             )
+
+            state.uncertainty_score += 0.15
+
+            outcome = (
+                build_fallback_debate_outcome(
+                    state
+                )
+            )
+
+        except (ValidationError, ValueError):
+            fallback_used = True
+            source_type = ProvenanceSource.LOCAL_FALLBACK
+
+            state.reasoning_notes.append(
+                (
+                    "Debate generation failed. "
+                    "Used local fallback debate."
+                )
+            )
+
+            state.uncertainty_score += 0.1
+
             outcome = (
                 build_fallback_debate_outcome(
                     state
@@ -968,25 +2675,123 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
         state.reasoning_notes.extend(
             [
                 f"Debate insight: {obs}"
-                for obs in outcome.strategic_observations
+                for obs in (
+                    outcome
+                    .strategic_observations
+                )
             ]
+        )
+
+        record_provenance(
+            state,
+            artifact_key="debate_outcome",
+            stage="debate",
+            source_type=source_type,
+            summary=f"Selected winning candidate {outcome.winning_candidate_id}.",
+            confidence=outcome.confidence,
+            fallback_used=fallback_used,
+            supporting_keys=["strategy_hypotheses", "design_candidates", "critique_reports"],
+        )
+        update_state_artifact(
+            state,
+            artifact_key="debate_outcome",
+            stage="debate",
+            source_type=source_type,
+            confidence=outcome.confidence,
+            summary="Winning candidate selected through debate.",
+            status="fallback" if fallback_used else "derived",
+        )
+        record_lineage(
+            state,
+            stage="debate",
+            decision="selected_candidate_direction",
+            confidence=outcome.confidence,
+            inputs=["strategy_hypotheses", "design_candidates", "critique_reports"],
+            outputs=["debate_outcome"],
+            summary="Compared candidates and chose the strongest direction.",
+            fallback_used=fallback_used,
         )
 
         return state
 
+    @register_node("simulation")
     def simulation_node(
         state: WebsiteAgentState,
     ) -> WebsiteAgentState:
 
+        state.execution_trace.append(
+            "simulation"
+        )
+
+        state.node_visit_counts[
+            "simulation"
+        ] = (
+            state.node_visit_counts.get(
+                "simulation",
+                0,
+            )
+            + 1
+        )
+        fallback_used = False
+        source_type = ProvenanceSource.EXTERNAL_MODEL
+        tool_context = invoke_cognition_tools(
+            state,
+            "simulation",
+        )
+
+        prompt = build_simulation_prompt(
+            state,
+            tool_context,
+        )
+
         try:
-            simulation = planner.generate_model(
-                build_simulation_prompt(state),
-                SimulationReport,
+
+            simulation = (
+                planner.generate_model(
+                    prompt,
+                    SimulationReport,
+                )
             )
-        except ValidationError:
+
+        except PlannerGenerationError as exc:
+            fallback_used = True
+            source_type = ProvenanceSource.HEURISTIC_FALLBACK
+
+            logger.warning(
+                "Simulation fallback triggered: %s",
+                exc,
+            )
+
             state.reasoning_notes.append(
-                "Simulation generation failed. Used local fallback simulation."
+                (
+                    "Simulation generation used "
+                    "deterministic fallback "
+                    "because external reasoning "
+                    "failed."
+                )
             )
+
+            state.uncertainty_score += 0.15
+
+            simulation = (
+                build_fallback_simulation_report(
+                    state
+                )
+            )
+
+        except (ValidationError, ValueError):
+            fallback_used = True
+            source_type = ProvenanceSource.LOCAL_FALLBACK
+
+            state.reasoning_notes.append(
+                (
+                    "Simulation generation failed. "
+                    "Used local fallback simulation."
+                )
+            )
+
+            state.uncertainty_score += 0.1
+
             simulation = (
                 build_fallback_simulation_report(
                     state
@@ -1011,21 +2816,200 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
             )
         )
 
-        for issue in (
-            simulation.systemic_issues
+        for workflow_simulation in (
+            simulation.simulations
         ):
+
             state.reasoning_notes.append(
-                f"Simulation issue: {issue}"
+                (
+                    "Simulation persona: "
+                    f"{workflow_simulation.persona}"
+                )
             )
 
-        return state
+            state.reasoning_notes.append(
+                (
+                    "Simulation goal: "
+                    f"{workflow_simulation.goal}"
+                )
+            )
 
+            state.reasoning_notes.append(
+                (
+                    "Simulation journey: "
+                    f"{workflow_simulation.journey_summary}"
+                )
+            )
+
+            if (
+                workflow_simulation
+                .friction_points
+            ):
+
+                state.reasoning_notes.extend(
+                    [
+                        (
+                            "Simulation friction: "
+                            f"{issue}"
+                        )
+                        for issue in (
+                            workflow_simulation
+                            .friction_points
+                        )
+                    ]
+                )
+
+            if (
+                workflow_simulation
+                .trust_observations
+            ):
+
+                state.reasoning_notes.extend(
+                    [
+                        (
+                            "Simulation trust: "
+                            f"{obs}"
+                        )
+                        for obs in (
+                            workflow_simulation
+                            .trust_observations
+                        )
+                    ]
+                )
+
+            if (
+                workflow_simulation
+                .confusion_points
+            ):
+
+                state.reasoning_notes.extend(
+                    [
+                        (
+                            "Simulation confusion: "
+                            f"{issue}"
+                        )
+                        for issue in (
+                            workflow_simulation
+                            .confusion_points
+                        )
+                    ]
+                )
+
+            if (
+                workflow_simulation
+                .conversion_barriers
+            ):
+
+                state.reasoning_notes.extend(
+                    [
+                        (
+                            "Simulation barrier: "
+                            f"{barrier}"
+                        )
+                        for barrier in (
+                            workflow_simulation
+                            .conversion_barriers
+                        )
+                    ]
+                )
+
+            state.reasoning_notes.append(
+                (
+                    "Simulation success: "
+                    f"{workflow_simulation.successful}"
+                )
+            )
+
+            state.reasoning_notes.append(
+                (
+                    "Simulation realism: "
+                    f"{workflow_simulation.realism_score}/10"
+                )
+            )
+
+        if simulation.systemic_issues:
+
+            state.reasoning_notes.extend(
+                [
+                    (
+                        "Simulation issue: "
+                        f"{issue}"
+                    )
+                    for issue in (
+                        simulation
+                        .systemic_issues
+                    )
+                ]
+            )
+
+        if (
+            simulation
+            .recommended_improvements
+        ):
+
+            state.reasoning_notes.extend(
+                [
+                    (
+                        "Simulation improvement: "
+                        f"{improvement}"
+                    )
+                    for improvement in (
+                        simulation
+                        .recommended_improvements
+                    )
+                ]
+            )
+
+        simulation_confidence = max(
+            0.45,
+            simulation.overall_realism_score / 10.0,
+        )
+        record_provenance(
+            state,
+            artifact_key="simulation_report",
+            stage="simulation",
+            source_type=source_type,
+            summary=f"Simulated user realism score {simulation.overall_realism_score}/10.",
+            confidence=simulation_confidence,
+            fallback_used=fallback_used,
+            supporting_keys=["design_candidates", "debate_outcome", "critique_history"],
+        )
+        update_state_artifact(
+            state,
+            artifact_key="simulation_report",
+            stage="simulation",
+            source_type=source_type,
+            confidence=simulation_confidence,
+            summary="Workflow simulation completed.",
+            status="fallback" if fallback_used else "derived",
+        )
+        record_lineage(
+            state,
+            stage="simulation",
+            decision="simulated_candidate_realism",
+            confidence=simulation_confidence,
+            inputs=["design_candidates", "debate_outcome", "critique_history"],
+            outputs=["simulation_report"],
+            summary="Tested behavioral realism of planned flows.",
+            fallback_used=fallback_used,
+        )
+
+        return state
+    
+    @register_node("revise")
     def revise_node(
         state: WebsiteAgentState,
     ) -> WebsiteAgentState:
+        fallback_used = False
+        source_type = ProvenanceSource.EXTERNAL_MODEL
+        tool_context = invoke_cognition_tools(
+            state,
+            "revision",
+        )
 
         prompt = build_revision_prompt(
-            state
+            state,
+            tool_context,
         )
 
         raw = planner.generate_text(
@@ -1048,7 +3032,32 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
             )
 
+            if (
+                state.finalization_decision
+                and state.finalization_decision.finalize_now
+                and state.finalization_decision.readiness_score >= 0.72
+                and state.design_spec.chosen_candidate_id
+                != state.finalization_decision.selected_candidate_id
+            ):
+                fallback_used = True
+                source_type = ProvenanceSource.GRAPH_ROUTER
+                state.reasoning_notes.append(
+                    (
+                        "Revision output disagreed with the explicit finalization authority. "
+                        "Applying authority-selected best-so-far candidate."
+                    )
+                )
+                state.design_spec = (
+                    DesignSpec.model_validate(
+                        build_fallback_design_spec(
+                            state
+                        )
+                    )
+                )
+
         except Exception:
+            fallback_used = True
+            source_type = ProvenanceSource.LOCAL_FALLBACK
             state.design_spec = (
                 DesignSpec.model_validate(
                     build_fallback_design_spec(
@@ -1073,6 +3082,40 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
             )
         )
 
+        final_confidence = max(
+            0.45,
+            1.0 - min(state.uncertainty_score, 0.55),
+        )
+        record_provenance(
+            state,
+            artifact_key="design_spec",
+            stage="revise",
+            source_type=source_type,
+            summary=f"Finalized design spec using candidate {state.design_spec.chosen_candidate_id}.",
+            confidence=final_confidence,
+            fallback_used=fallback_used,
+            supporting_keys=["strategy_hypotheses", "design_candidates", "critique_reports", "simulation_report"],
+        )
+        update_state_artifact(
+            state,
+            artifact_key="design_spec",
+            stage="revise",
+            source_type=source_type,
+            confidence=final_confidence,
+            summary="Final design specification ready for rendering.",
+            status="fallback" if fallback_used else "finalized",
+        )
+        record_lineage(
+            state,
+            stage="revise",
+            decision="finalized_design_spec",
+            confidence=final_confidence,
+            inputs=["strategy_hypotheses", "design_candidates", "critique_reports", "simulation_report"],
+            outputs=["design_spec"],
+            summary="Synthesized final design from the surviving candidate evidence.",
+            fallback_used=fallback_used,
+        )
+
         return state
 
     def critique_router(
@@ -1080,7 +3123,22 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
     ) -> str:
         # Hard revision cap to prevent endless loops if routing keeps requesting regeneration.
         # Note: design_candidates_node increments revision_iteration.
-        MAX_REVISION_ITERATIONS = 4
+        MAX_REVISION_ITERATIONS = 3
+        COMMIT_REVISION_ITERATION = 2
+        sim_score = (
+            state.simulation_report.overall_realism_score
+            if state.simulation_report
+            else 0
+        )
+        debate_conf = (
+            state.debate_outcome.confidence
+            if state.debate_outcome
+            else 0.0
+        )
+        reflection_expand = bool(
+            state.reflection_report
+            and state.reflection_report.should_expand_exploration
+        )
         if state.revision_iteration >= MAX_REVISION_ITERATIONS:
             state.reasoning_notes.append(
                 (
@@ -1088,43 +3146,15 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                     f"({MAX_REVISION_ITERATIONS}). Proceeding to final synthesis."
                 )
             )
+            set_finalization_decision(
+                state,
+                authority="revision_cap",
+                reason="Reached maximum revision iterations and must finalize best-so-far output.",
+                supporting_signals=[
+                    f"revision_iteration={state.revision_iteration}",
+                ],
+            )
             return "revise"
-
-        if (
-            state.simulation_report
-            and state.simulation_report.overall_realism_score < 6
-        ):
-            state.reasoning_notes.append(
-                (
-                    "Simulation realism too low. "
-                    "Regenerating workflows."
-                )
-            )
-            return "design_candidates"
-
-        if (
-            state.debate_outcome
-            and state.debate_outcome.confidence < 0.55
-        ):
-            state.reasoning_notes.append(
-                (
-                    "Debate confidence low. "
-                    "Expanding strategic search."
-                )
-            )
-            return "design_candidates"
-
-        if (
-            state.reflection_report
-            and state.reflection_report.should_expand_exploration
-        ):
-            state.reasoning_notes.append(
-                (
-                    "Reflection agent requested "
-                    "expanded strategic exploration."
-                )
-            )
-            return "design_candidates"
 
         weak_candidates = 0
         average_scores = []
@@ -1148,6 +3178,151 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
             sum(average_scores)
             / max(len(average_scores), 1)
         )
+
+        behavioral_issues = (
+            evaluate_behavioral_coherence(
+                state
+            )
+        )
+
+        good_enough = (
+            overall_average >= 7.0
+            and sim_score >= 7
+            and debate_conf >= 0.6
+        )
+
+        if behavioral_issues:
+
+            state.reasoning_notes.extend(
+                [
+                    (
+                        "Behavioral validation: "
+                        + issue
+                    )
+                    for issue in behavioral_issues
+                ]
+            )
+
+            if (
+                state.revision_iteration < 2
+            ):
+
+                state.reasoning_notes.append(
+                    (
+                        "Behavioral coherence "
+                        "validation failed. "
+                        "Regenerating candidates."
+                    )
+                )
+
+                return "design_candidates"
+
+        if good_enough:
+            state.reasoning_notes.append(
+                (
+                    "Convergence threshold met "
+                    f"(avg={round(overall_average, 2)}, "
+                    f"sim={sim_score}, "
+                    f"debate={round(debate_conf, 2)}). "
+                    "Finalizing best available plan."
+                )
+            )
+            set_finalization_decision(
+                state,
+                authority="convergence_threshold",
+                reason="Convergence threshold met with sufficiently strong critique, simulation, and debate signals.",
+                supporting_signals=[
+                    f"overall_average={round(overall_average, 2)}",
+                    f"simulation_score={sim_score}",
+                    f"debate_confidence={round(debate_conf, 2)}",
+                ],
+            )
+            return "revise"
+
+        if (
+            external_planner_unhealthy(
+                planner
+            )
+            and state.revision_iteration >= 1
+        ):
+            state.reasoning_notes.append(
+                (
+                    "External planner is degraded. "
+                    "Avoiding further regeneration and finalizing best-so-far output."
+                )
+            )
+            set_finalization_decision(
+                state,
+                authority="planner_health_guard",
+                reason="External planner health is degraded after prior exploration, so the system is finalizing the strongest available candidate.",
+                supporting_signals=[
+                    f"failure_count={getattr(planner, 'failure_count', 0)}",
+                    f"revision_iteration={state.revision_iteration}",
+                ],
+            )
+            return "revise"
+
+        if (
+            state.revision_iteration >= COMMIT_REVISION_ITERATION
+            and overall_average >= 6.6
+            and sim_score >= 6
+        ):
+            state.reasoning_notes.append(
+                (
+                    "Good-enough threshold reached after repeated exploration "
+                    f"(avg={round(overall_average, 2)}, sim={sim_score}). "
+                    "Committing best-so-far candidate."
+                )
+            )
+            set_finalization_decision(
+                state,
+                authority="good_enough_commit",
+                reason="Repeated exploration produced a good-enough candidate, so the system is committing best-so-far instead of continuing to search.",
+                supporting_signals=[
+                    f"overall_average={round(overall_average, 2)}",
+                    f"simulation_score={sim_score}",
+                    f"revision_iteration={state.revision_iteration}",
+                ],
+            )
+            return "revise"
+
+        if (
+            state.simulation_report
+            and state.simulation_report.overall_realism_score < 6
+            and state.revision_iteration < COMMIT_REVISION_ITERATION
+        ):
+            state.reasoning_notes.append(
+                (
+                    "Simulation realism too low. "
+                    "Regenerating workflows."
+                )
+            )
+            return "design_candidates"
+
+        if (
+            state.debate_outcome
+            and state.debate_outcome.confidence < 0.55
+            and state.revision_iteration < COMMIT_REVISION_ITERATION
+        ):
+            state.reasoning_notes.append(
+                (
+                    "Debate confidence low. "
+                    "Expanding strategic search."
+                )
+            )
+            return "design_candidates"
+
+        if (
+            reflection_expand
+            and state.revision_iteration < COMMIT_REVISION_ITERATION
+        ):
+            state.reasoning_notes.append(
+                (
+                    "Reflection agent requested "
+                    "expanded strategic exploration."
+                )
+            )
+            return "design_candidates"
 
         threshold = (
             1
@@ -1176,8 +3351,309 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 "and synthesis."
             )
         )
+        set_finalization_decision(
+            state,
+            authority="synthesis_gate",
+            reason="Critique quality is acceptable and no stronger reason to continue exploration remains.",
+            supporting_signals=[
+                f"overall_average={round(overall_average, 2)}",
+                f"weak_candidates={weak_candidates}",
+            ],
+        )
 
         return "revise"
+
+    def requirements_router(
+        state: WebsiteAgentState,
+    ) -> str:
+
+        state.node_visit_counts[
+            "requirements"
+        ] = (
+            state.node_visit_counts.get(
+                "requirements",
+                0,
+            )
+            + 1
+        )
+
+        if (
+            state.node_visit_counts[
+                "requirements"
+            ]
+            >= 3
+        ):
+
+            state.reasoning_notes.append(
+                (
+                    "Requirements routing depth exceeded. "
+                    "Proceeding to strategy generation."
+                )
+            )
+
+            state.execution_trace.append(
+                (
+                    "requirements -> strategy_hypotheses "
+                    "(loop protection)"
+                )
+            )
+
+            return "strategy_hypotheses"
+
+        if (
+            state.uncertainty_score > 0.45
+        ):
+
+            state.reasoning_notes.append(
+                (
+                    "High uncertainty detected. "
+                    "Routing to memory retrieval."
+                )
+            )
+
+            state.execution_trace.append(
+                (
+                    "requirements -> memory_retrieval"
+                )
+            )
+
+            return "memory_retrieval"
+
+        state.reasoning_notes.append(
+            (
+                "Requirements confidence acceptable. "
+                "Proceeding to strategy generation."
+            )
+        )
+
+        state.execution_trace.append(
+            (
+                "requirements -> strategy_hypotheses"
+            )
+        )
+
+        return "strategy_hypotheses"
+
+    def strategy_router(
+        state: WebsiteAgentState,
+    ) -> str:
+
+        state.node_visit_counts[
+            "strategy_hypotheses"
+        ] = (
+            state.node_visit_counts.get(
+                "strategy_hypotheses",
+                0,
+            )
+            + 1
+        )
+
+        if (
+            state.node_visit_counts[
+                "strategy_hypotheses"
+            ]
+            >= 3
+        ):
+
+            state.reasoning_notes.append(
+                (
+                    "Maximum strategy exploration depth reached. "
+                    "Proceeding to design generation."
+                )
+            )
+
+            state.execution_trace.append(
+                (
+                    "strategy_hypotheses -> design_candidates "
+                    "(loop protection)"
+                )
+            )
+
+            return "design_candidates"
+
+        if (
+            state.uncertainty_score > 0.6
+        ):
+
+            state.reasoning_notes.append(
+                (
+                    "Strategy uncertainty remains high. "
+                    "Exploring additional strategy hypotheses."
+                )
+            )
+
+            state.execution_trace.append(
+                (
+                    "strategy_hypotheses -> strategy_hypotheses"
+                )
+            )
+
+            return "strategy_hypotheses"
+
+        state.reasoning_notes.append(
+            (
+                "Strategy confidence acceptable. "
+                "Proceeding to design candidates."
+            )
+        )
+
+        state.execution_trace.append(
+            (
+                "strategy_hypotheses -> design_candidates"
+            )
+        )
+
+        return "design_candidates"
+
+    def critique_stage_router(
+        state: WebsiteAgentState,
+    ) -> str:
+        
+        decision = (
+            state.agent_decisions.get(
+                "critique"
+            )
+        )
+
+        state.node_visit_counts[
+            "critique"
+        ] = (
+            state.node_visit_counts.get(
+                "critique",
+                0,
+            )
+            + 1
+        )
+
+        critique_count = (
+            state.node_visit_counts[
+                "critique"
+            ]
+        )
+
+        if critique_count >= 4:
+
+            state.reasoning_notes.append(
+                (
+                    "Critique recursion limit reached. "
+                    "Proceeding to synthesis."
+                )
+            )
+
+            state.execution_trace.append(
+                "critique -> revise (loop protection)"
+            )
+
+            return "revise"
+
+        if (decision and decision.recommend_revision):
+
+            state.reasoning_notes.append(
+                (
+                    "Critical uncertainty detected during critique. "
+                    "Returning to strategy exploration."
+                )
+            )
+
+            state.execution_trace.append(
+                (
+                    "critique -> strategy_hypotheses"
+                )
+            )
+
+            return "strategy_hypotheses"
+
+        state.reasoning_notes.append(
+            (
+                "Critique completed successfully. "
+                "Proceeding to reflection."
+            )
+        )
+
+        state.execution_trace.append(
+            (
+                "critique -> reflection"
+            )
+        )
+
+        return "reflection"
+
+    def reflection_router(
+        state: WebsiteAgentState,
+    ) -> str:
+        if not state.reflection_report:
+            return "debate"
+
+        reflection_conf = artifact_confidence(
+            state,
+            "reflection_report",
+            fallback=0.55,
+        )
+
+        if (
+            state.reflection_report.should_expand_exploration
+            and state.revision_iteration < 2
+            and reflection_conf >= 0.55
+        ):
+            add_reasoning_note(
+                state,
+                "Reflection requested broader exploration with sufficient confidence. Returning to candidate generation.",
+            )
+            return "design_candidates"
+
+        if (
+            reflection_conf < 0.5
+            and external_planner_unhealthy(
+                planner
+            )
+        ):
+            add_reasoning_note(
+                state,
+                "Reflection confidence is weak and planner health is poor. Skipping debate and moving directly to simulation.",
+            )
+            return "simulation"
+
+        return "debate"
+
+    def debate_router(
+        state: WebsiteAgentState,
+    ) -> str:
+        if not state.debate_outcome:
+            return "simulation"
+
+        if (
+            state.debate_outcome.confidence >= 0.8
+            and state.uncertainty_score <= 0.28
+        ):
+            add_reasoning_note(
+                state,
+                "Debate produced a strong winner under low uncertainty. Skipping simulation and moving to revision.",
+            )
+            set_finalization_decision(
+                state,
+                authority="debate_router",
+                reason="Debate produced a strong winner under low uncertainty, so the system is finalizing without additional simulation.",
+                supporting_signals=[
+                    f"debate_confidence={round(state.debate_outcome.confidence, 2)}",
+                    f"winning_candidate={state.debate_outcome.winning_candidate_id}",
+                    f"uncertainty={round(state.uncertainty_score, 2)}",
+                ],
+            )
+            return "revise"
+
+        if (
+            artifact_used_fallback(
+                state,
+                "debate_outcome",
+            )
+            and state.revision_iteration >= 1
+        ):
+            add_reasoning_note(
+                state,
+                "Debate relied on fallback reasoning after prior exploration. Running simulation before finalization.",
+            )
+
+        return "simulation"
 
     graph = StateGraph(
         WebsiteAgentState
@@ -1195,6 +3671,11 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
     graph.add_node(
         "business_profile",
         business_profile_node,
+    )
+
+    graph.add_node(
+        "memory_retrieval",
+        memory_retrieval_node,
     )
 
     graph.add_node(
@@ -1234,17 +3715,22 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
 
     graph.add_edge(
         "business_profile",
-        "requirements",
+        "memory_retrieval",
     )
 
     graph.add_edge(
+        "memory_retrieval",
         "requirements",
-        "strategy_hypotheses",
     )
 
-    graph.add_edge(
+    graph.add_conditional_edges(
+        "requirements",
+        requirements_router,
+    )
+
+    graph.add_conditional_edges(
         "strategy_hypotheses",
-        "design_candidates",
+        strategy_router,
     )
 
     graph.add_edge(
@@ -1252,19 +3738,19 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
         "critique",
     )
 
-    graph.add_edge(
+    graph.add_conditional_edges(
         "critique",
-        "reflection",
+        critique_stage_router,
     )
 
-    graph.add_edge(
+    graph.add_conditional_edges(
         "reflection",
-        "debate",
+        reflection_router,
     )
 
-    graph.add_edge(
+    graph.add_conditional_edges(
         "debate",
-        "simulation",
+        debate_router,
     )
 
     graph.add_conditional_edges(
@@ -1372,10 +3858,16 @@ def run_agent_graph(
 
     # Global termination guards:
     # - Max number of streamed updates
-    # - Loop signature repeat cap
+    # - Loop signature consecutive repeat cap, evaluated only at cycle checkpoints
+    #   so normal within-pass node updates do not look like a planning loop.
     MAX_STREAM_UPDATES = 60
-    MAX_SIGNATURE_REPEATS = 6
-    signature_repeat_count: dict[tuple, int] = {}
+    MAX_SIGNATURE_REPEATS = 4
+
+    current_state = state
+
+    last_signature: tuple | None = None
+
+    consecutive_signature_repeats = 0
 
     for idx, event in enumerate(
         graph.stream(
@@ -1384,7 +3876,9 @@ def run_agent_graph(
         ),
         start=1,
     ):
+
         if idx > MAX_STREAM_UPDATES:
+
             raise RuntimeError(
                 f"graph exceeded MAX_STREAM_UPDATES={MAX_STREAM_UPDATES} without terminating"
             )
@@ -1398,36 +3892,130 @@ def run_agent_graph(
         events.append(
             serialized
         )
-        final_state = event
 
-        # cycle detection using latest state (graph emits partial updates but final_state will accumulate)
-        try:
-            if hasattr(final_state, "get"):
-                # if event is dict-like, we can't reliably reconstruct state; use state object
-                sig = _state_cycle_signature(state)
-            else:
-                sig = _state_cycle_signature(state)
-        except Exception:
-            sig = None
+        merged = current_state.model_dump()
 
-        if sig is not None:
-            signature_repeat_count[sig] = signature_repeat_count.get(sig, 0) + 1
-            if signature_repeat_count[sig] >= MAX_SIGNATURE_REPEATS:
-                raise RuntimeError(
-                    "graph appears to be stuck in a planning loop (cycle signature repeated "
-                    f"{MAX_SIGNATURE_REPEATS} times)."
+        if isinstance(
+            serialized,
+            dict,
+        ):
+
+            for node_update in (
+                serialized.values()
+            ):
+
+                if isinstance(
+                    node_update,
+                    dict,
+                ):
+
+                    merged.update(
+                        node_update
+                    )
+
+        current_state = (
+            WebsiteAgentState.model_validate(
+                merged
+            )
+        )
+
+        final_state = current_state
+
+        checkpoint_nodes = {
+            "simulation",
+            "design_candidates",
+        }
+
+        event_nodes = {
+            key
+            for key in serialized.keys()
+            if isinstance(
+                key,
+                str,
+            )
+        }
+
+        if (
+            event_nodes
+            & checkpoint_nodes
+        ):
+
+            try:
+
+                sig = (
+                    _state_cycle_signature(
+                        current_state
+                    )
                 )
 
+            except Exception:
+
+                sig = None
+
+            if sig is not None:
+
+                if sig == last_signature:
+
+                    consecutive_signature_repeats += 1
+
+                else:
+
+                    last_signature = sig
+
+                    consecutive_signature_repeats = 1
+
+                if (
+                    consecutive_signature_repeats
+                    >= MAX_SIGNATURE_REPEATS
+                ):
+
+                    raise RuntimeError(
+                        "graph appears to be stuck in a planning loop (cycle signature repeated "
+                        f"{MAX_SIGNATURE_REPEATS} times at cycle checkpoints)."
+                    )
+
     try:
+
         validated = (
             WebsiteAgentState.model_validate(
                 final_state
             )
         )
 
+        print(
+            "\nEXECUTION TRACE:\n",
+            validated.execution_trace,
+        )
+
+        print(
+            "\nNODE VISIT COUNTS:\n",
+            validated.node_visit_counts,
+        )
+
+        print(
+            "\nDEBUG PAYLOAD:\n",
+            {
+                "execution_trace":
+                    validated.execution_trace,
+                "node_visit_counts":
+                    validated.node_visit_counts,
+            }
+        )
+
         return {
-            "final_state": validated.model_dump(),
-            "events": events,
+            "final_state":
+                validated.model_dump(),
+
+            "events":
+                events,
+
+            "debug": {
+                "execution_trace":
+                    validated.execution_trace,
+
+                "node_visit_counts":
+                    validated.node_visit_counts,
+            },
         }
 
     except ValidationError as exc:
@@ -1435,6 +4023,7 @@ def run_agent_graph(
         raise RuntimeError(
             f"graph returned invalid state: {exc}"
         ) from exc
+
 
 
 def build_business_profile_prompt(state: WebsiteAgentState) -> str:
@@ -1463,9 +4052,153 @@ def build_business_profile_prompt(state: WebsiteAgentState) -> str:
     ).strip()
 
 
-def build_requirements_prompt(state: WebsiteAgentState) -> str:
+def compact_business_profile_context(state: WebsiteAgentState) -> dict[str, Any]:
+    if not state.business_profile:
+        return {}
+    profile = state.business_profile
+    return {
+        "name": profile.name,
+        "location": profile.location,
+        "goal": profile.goal,
+        "vertical": profile.vertical.value,
+        "subtype": profile.subtype,
+        "risk_level": profile.risk_level.value,
+        "audience": profile.audience[:4],
+        "confidence": round(profile.confidence, 2),
+    }
+
+
+def compact_requirements_context(state: WebsiteAgentState) -> dict[str, Any]:
+    if not state.requirements_spec:
+        return {}
+    requirements = state.requirements_spec
+    return {
+        "pages": [page.value for page in requirements.required_pages[:6]],
+        "workflows": [workflow.value for workflow in requirements.required_workflows[:4]],
+        "trust": requirements.trust_requirements[:5],
+        "conversion": requirements.conversion_priorities[:5],
+        "missing_information": requirements.missing_information[:4],
+    }
+
+def compact_behavioral_context(
+    state: WebsiteAgentState,
+) -> list[dict]:
+
+    return [
+        context.model_dump()
+        for context in (
+            state.behavioral_contexts
+            or []
+        )
+    ]
+
+def compact_behavioral_blend(
+    state: WebsiteAgentState,
+) -> dict:
+
+    if not state.behavioral_blend:
+        return {}
+
+    return (
+        state.behavioral_blend
+        .model_dump()
+    )
+
+
+def compact_strategy_context(state: WebsiteAgentState) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": strategy.strategy_id,
+            "name": strategy.name,
+            "thesis": strategy.core_thesis,
+            "target_behavior": strategy.target_behavior,
+            "strengths": strategy.strengths[:3],
+            "risks": strategy.risks[:3],
+            "confidence": round(strategy.confidence, 2),
+        }
+        for strategy in (state.strategy_hypotheses or [])[:3]
+    ]
+
+
+def compact_candidate_context(state: WebsiteAgentState) -> list[dict[str, Any]]:
+    compacted = []
+    for candidate in (state.design_candidates or [])[:3]:
+        compacted.append(
+            {
+                "id": candidate.candidate_id,
+                "rationale": candidate.rationale,
+                "primary_action": candidate.primary_action.label,
+                "pages": [
+                    {
+                        "page_type": page.page_type.value,
+                        "sections": [
+                            section.type.value
+                            for section in page.sections[:5]
+                        ],
+                    }
+                    for page in candidate.pages[:4]
+                ],
+                "confidence": round(candidate.confidence, 2),
+            }
+        )
+    return compacted
+
+
+def compact_critique_context(state: WebsiteAgentState) -> list[dict[str, Any]]:
+    compacted = []
+    for critique in (state.critique_reports or [])[:3]:
+        avg_score = round(
+            sum(score.score for score in critique.scores) / max(len(critique.scores), 1),
+            2,
+        )
+        compacted.append(
+            {
+                "candidate_id": critique.candidate_id,
+                "summary": critique.summary,
+                "average_score": avg_score,
+                "strengths": critique.strengths[:3],
+                "weaknesses": critique.weaknesses[:3],
+                "revision_instructions": critique.revision_instructions[:4],
+            }
+        )
+    return compacted
+
+
+def compact_history(history: list[dict[str, Any]], limit: int = 1) -> list[dict[str, Any]]:
+    return history[-limit:] if history else []
+
+
+def compact_reasoning_notes(state: WebsiteAgentState, limit: int = 6) -> list[str]:
+    return (state.reasoning_notes or [])[-limit:]
+
+
+def compact_memory_context(
+    state: WebsiteAgentState,
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": memory.memory_id,
+            "category": memory.category,
+            "title": memory.title,
+            "summary": memory.summary,
+            "actions": memory.recommended_actions[:3],
+            "anti_patterns": memory.anti_patterns[:2],
+            "relevance": round(memory.relevance, 2),
+        }
+        for memory in (
+            state.retrieved_memories
+            or []
+        )[:3]
+    ]
+
+
+def build_requirements_prompt(
+    state: WebsiteAgentState,
+    tool_context: dict[str, Any] | None = None,
+) -> str:
     assert state.business_profile is not None
     rulebook = VERTICAL_RULEBOOKS.get(state.business_profile.vertical)
+    tool_context = tool_context or {}
     return dedent(
         f"""
         You are the Requirements Agent.
@@ -1475,11 +4208,20 @@ def build_requirements_prompt(state: WebsiteAgentState) -> str:
         Current uncertainty score:
         {state.uncertainty_score}
 
-        Business profile:
-        {state.business_profile.model_dump()}
+        Business snapshot tool:
+        {tool_context.get("business_snapshot", {})}
 
         Vertical rulebook guidance:
         {rulebook}
+
+        Asset evidence tool:
+        {tool_context.get("asset_evidence", {})}
+
+        Memory guidance tool:
+        {tool_context.get("memory_guidance", {})}
+
+        Process health tool:
+        {tool_context.get("process_health", {})}
 
         Requirements:
         - choose required pages from the allowed enum values
@@ -1509,6 +4251,7 @@ def build_requirements_prompt(state: WebsiteAgentState) -> str:
 
 def build_strategy_prompt(
     state: WebsiteAgentState,
+    tool_context: dict[str, Any] | None = None,
 ) -> str:
 
     assert (
@@ -1521,6 +4264,7 @@ def build_strategy_prompt(
         is not None
     )
 
+    tool_context = tool_context or {}
     return dedent(
         f"""
         You are the Strategy Agent
@@ -1531,24 +4275,24 @@ def build_strategy_prompt(
         StrategyHypothesisSet
         JSON object only.
 
-        Business profile:
-        {state.business_profile.model_dump()}
+        Business snapshot tool:
+        {tool_context.get("business_snapshot", {})}
+
+        Workflow constraints tool:
+        {tool_context.get("workflow_constraints", {})}
+
+        Asset evidence tool:
+        {tool_context.get("asset_evidence", {})}
+
+        Memory guidance tool:
+        {tool_context.get("memory_guidance", {})}
+
+        Process health tool:
+        {tool_context.get("process_health", {})}
 
         Requirements:
-        {state.requirements_spec.model_dump()}
 
-        Current uncertainty score:
-        {state.uncertainty_score}
-
-        Asset evidence:
-        {serialize_asset_extractions(state.asset_extractions)}
-
-        Reasoning notes:
-        {state.reasoning_notes}
-
-        Requirements:
-
-        - generate 3 genuinely
+        - generate 2 genuinely
           distinct website
           strategies
 
@@ -1618,8 +4362,10 @@ def build_strategy_prompt(
     ).strip()
 
 
+
 def build_design_candidates_prompt(
     state: WebsiteAgentState,
+    tool_context: dict[str, Any] | None = None,
 ) -> str:
 
     assert (
@@ -1636,9 +4382,7 @@ def build_design_candidates_prompt(
         state.business_profile.vertical
     )
 
-    asset_digest = summarize_asset_evidence(
-        state.asset_extractions
-    )
+    tool_context = tool_context or {}
 
     return dedent(
         f"""
@@ -1648,23 +4392,26 @@ def build_design_candidates_prompt(
         Build a DesignCandidateSet
         JSON object only.
 
-        Business profile:
-        {state.business_profile.model_dump()}
+        Business snapshot tool:
+        {tool_context.get("business_snapshot", {})}
 
-        Requirements:
-        {state.requirements_spec.model_dump()}
+        Workflow constraints tool:
+        {tool_context.get("workflow_constraints", {})}
 
-        Strategy hypotheses:
-        {[strategy.model_dump() for strategy in state.strategy_hypotheses]}
+        Strategy landscape tool:
+        {tool_context.get("strategy_landscape", {})}
+
+        Memory guidance tool:
+        {tool_context.get("memory_guidance", {})}
 
         Previous critique history:
-        {state.critique_history}
+        {compact_history(state.critique_history)}
 
-        Asset evidence:
-        {serialize_asset_extractions(state.asset_extractions)}
+        Asset evidence tool:
+        {tool_context.get("asset_evidence", {})}
 
-        Asset evidence summary:
-        {asset_digest}
+        Process health tool:
+        {tool_context.get("process_health", {})}
 
         Rulebook:
         {rulebook}
@@ -1708,17 +4455,17 @@ def build_design_candidates_prompt(
           strategically justified,
           not aesthetically justified
 
+        - keep copy concise
         - every section must include:
           - purpose
-          - rationale
+          - short rationale
 
-        - every rationale must reference:
+        - rationale should be brief
+          and tie to:
           - business goals
           - workflow behavior
           - user intent
-          - extracted asset evidence
-          - visual cues
-          - operational signals
+          - asset evidence when relevant
 
         - avoid repeating weaknesses
           identified in previous
@@ -1735,6 +4482,10 @@ def build_design_candidates_prompt(
           genuinely different user behavior
           models
 
+        - return compact JSON only
+        - keep section count modest
+        - do not add optional prose
+
         - use only allowed:
           - section types
           - page types
@@ -1749,11 +4500,14 @@ def build_design_candidates_prompt(
     ).strip()
 
 
-def build_critique_prompt(state: WebsiteAgentState) -> str:
+def build_critique_prompt(
+    state: WebsiteAgentState,
+    tool_context: dict[str, Any] | None = None,
+) -> str:
     assert state.business_profile is not None
     assert state.requirements_spec is not None
-    asset_digest = summarize_asset_evidence(state.asset_extractions)
     rulebook = VERTICAL_RULEBOOKS.get(state.business_profile.vertical)
+    tool_context = tool_context or {}
     return dedent(
         f"""
         You are the Design Critic Agent.
@@ -1763,17 +4517,23 @@ def build_critique_prompt(state: WebsiteAgentState) -> str:
         Current uncertainty score:
         {state.uncertainty_score}
 
-        Business profile:
-        {state.business_profile.model_dump()}
+        Business snapshot tool:
+        {tool_context.get("business_snapshot", {})}
 
-        Requirements:
-        {state.requirements_spec.model_dump()}
+        Workflow constraints tool:
+        {tool_context.get("workflow_constraints", {})}
 
-        Candidates:
-        {[candidate.model_dump() for candidate in state.design_candidates]}
+        Candidate landscape tool:
+        {tool_context.get("candidate_landscape", {})}
 
-        Asset evidence summary:
-        {asset_digest}
+        Memory guidance tool:
+        {tool_context.get("memory_guidance", {})}
+
+        Asset evidence tool:
+        {tool_context.get("asset_evidence", {})}
+
+        Process health tool:
+        {tool_context.get("process_health", {})}
         Vertical rulebook:
         {rulebook}
 
@@ -1839,6 +4599,7 @@ def build_critique_prompt(state: WebsiteAgentState) -> str:
 
 def build_revision_prompt(
     state: WebsiteAgentState,
+    tool_context: dict[str, Any] | None = None,
 ) -> str:
 
     assert (
@@ -1851,9 +4612,7 @@ def build_revision_prompt(
         is not None
     )
 
-    asset_digest = summarize_asset_evidence(
-        state.asset_extractions
-    )
+    tool_context = tool_context or {}
 
     return dedent(
         f"""
@@ -1863,26 +4622,35 @@ def build_revision_prompt(
         Build a final DesignSpec
         JSON object only.
 
-        Business profile:
-        {state.business_profile.model_dump()}
+        Business snapshot tool:
+        {tool_context.get("business_snapshot", {})}
 
-        Requirements:
-        {state.requirements_spec.model_dump()}
+        Workflow constraints tool:
+        {tool_context.get("workflow_constraints", {})}
 
-        Strategy hypotheses:
-        {[strategy.model_dump() for strategy in state.strategy_hypotheses]}
+        Strategy landscape tool:
+        {tool_context.get("strategy_landscape", {})}
 
-        Candidates:
-        {[candidate.model_dump() for candidate in state.design_candidates]}
+        Candidate landscape tool:
+        {tool_context.get("candidate_landscape", {})}
 
-        Critiques:
-        {[critique.model_dump() for critique in state.critique_reports]}
+        Critique landscape tool:
+        {tool_context.get("critique_landscape", {})}
+
+        Memory guidance tool:
+        {tool_context.get("memory_guidance", {})}
+
+        Finalization authority:
+        {state.finalization_decision.model_dump() if state.finalization_decision else None}
 
         Previous critique iterations:
-        {state.critique_history}
+        {compact_history(state.critique_history)}
 
-        Asset evidence summary:
-        {asset_digest}
+        Asset evidence tool:
+        {tool_context.get("asset_evidence", {})}
+
+        Process health tool:
+        {tool_context.get("process_health", {})}
 
         Requirements:
 
@@ -1893,6 +4661,7 @@ def build_revision_prompt(
           - critique quality
           - strategic coherence
           - behavioral optimization
+          - finalization authority if provided
 
         - revise the winning candidate
           WITHOUT collapsing its
@@ -1967,8 +4736,9 @@ def build_revision_prompt(
 
 def build_reflection_prompt(
     state: WebsiteAgentState,
+    tool_context: dict[str, Any] | None = None,
 ) -> str:
-
+    tool_context = tool_context or {}
     return dedent(
         f"""
         You are the Reflection Agent
@@ -1981,20 +4751,26 @@ def build_reflection_prompt(
         Generate a ReflectionReport
         JSON object only.
 
-        Business profile:
-        {state.business_profile.model_dump() if state.business_profile else None}
+        Strategy landscape tool:
+        {tool_context.get("strategy_landscape", {})}
 
-        Strategy hypotheses:
-        {[strategy.model_dump() for strategy in state.strategy_hypotheses]}
+        Candidate landscape tool:
+        {tool_context.get("candidate_landscape", {})}
+
+        Critique landscape tool:
+        {tool_context.get("critique_landscape", {})}
+
+        Process health tool:
+        {tool_context.get("process_health", {})}
 
         Candidate history:
-        {state.candidate_history}
+        {compact_history(state.candidate_history)}
 
         Critique history:
-        {state.critique_history}
+        {compact_history(state.critique_history)}
 
         Reasoning notes:
-        {state.reasoning_notes}
+        {compact_reasoning_notes(state)}
 
         Requirements:
 
@@ -2036,8 +4812,9 @@ def build_reflection_prompt(
 
 def build_debate_prompt(
     state: WebsiteAgentState,
+    tool_context: dict[str, Any] | None = None,
 ) -> str:
-
+    tool_context = tool_context or {}
     return dedent(
         f"""
         You are the Debate Agent
@@ -2047,17 +4824,23 @@ def build_debate_prompt(
         Generate a DebateOutcome
         JSON object only.
 
-        Business profile:
-        {state.business_profile.model_dump() if state.business_profile else None}
+        Business snapshot tool:
+        {tool_context.get("business_snapshot", {})}
 
-        Strategy hypotheses:
-        {[strategy.model_dump() for strategy in state.strategy_hypotheses]}
+        Strategy landscape tool:
+        {tool_context.get("strategy_landscape", {})}
 
-        Design candidates:
-        {[candidate.model_dump() for candidate in state.design_candidates]}
+        Candidate landscape tool:
+        {tool_context.get("candidate_landscape", {})}
 
-        Critiques:
-        {[critique.model_dump() for critique in state.critique_reports]}
+        Critique landscape tool:
+        {tool_context.get("critique_landscape", {})}
+
+        Memory guidance tool:
+        {tool_context.get("memory_guidance", {})}
+
+        Process health tool:
+        {tool_context.get("process_health", {})}
 
         Reflection report:
         {state.reflection_report.model_dump() if state.reflection_report else None}
@@ -2104,8 +4887,9 @@ def build_debate_prompt(
 
 def build_simulation_prompt(
     state: WebsiteAgentState,
+    tool_context: dict[str, Any] | None = None,
 ) -> str:
-
+    tool_context = tool_context or {}
     return dedent(
         f"""
         You are the Simulation Agent
@@ -2115,17 +4899,23 @@ def build_simulation_prompt(
         Generate a SimulationReport
         JSON object only.
 
-        Business profile:
-        {state.business_profile.model_dump() if state.business_profile else None}
+        Business snapshot tool:
+        {tool_context.get("business_snapshot", {})}
 
-        Final candidates:
-        {[candidate.model_dump() for candidate in state.design_candidates]}
+        Candidate landscape tool:
+        {tool_context.get("candidate_landscape", {})}
+
+        Critique landscape tool:
+        {tool_context.get("critique_landscape", {})}
+
+        Process health tool:
+        {tool_context.get("process_health", {})}
 
         Debate outcome:
         {state.debate_outcome.model_dump() if state.debate_outcome else None}
 
         Critique history:
-        {state.critique_history}
+        {compact_history(state.critique_history)}
 
         Requirements:
 
@@ -2263,6 +5053,50 @@ def normalize_enum(
 
     return value
 
+PAGE_ROLE_SECTION_RULES = {
+
+    PageType.HOME: {
+        SectionType.HERO_OFFER_BANNER,
+        SectionType.HERO_TRUST_BANNER,
+        SectionType.FEATURE_GRID,
+        SectionType.TRUST_BAND,
+        SectionType.REVIEW_BAND,
+        SectionType.PROOF_BAND,
+    },
+
+    PageType.MENU: {
+        SectionType.MENU_SHOWCASE,
+        SectionType.CATEGORY_STRIP,
+        SectionType.GALLERY_STRIP,
+    },
+
+    PageType.ORDER: {
+        SectionType.PRIMARY_WORKFLOW_FORM,
+        SectionType.TRUST_BAND,
+        SectionType.PROOF_BAND,
+    },
+
+    PageType.CONTACT: {
+        SectionType.TRUST_BAND,
+        SectionType.PROOF_BAND,
+    },
+
+    PageType.RESERVATIONS: {
+        SectionType.PRIMARY_WORKFLOW_FORM,
+        SectionType.TRUST_BAND,
+    },
+
+    PageType.SERVICES: {
+        SectionType.SERVICE_CARDS,
+        SectionType.FEATURE_GRID,
+        SectionType.TRUST_BAND,
+    },
+
+    PageType.ABOUT: {
+        SectionType.FEATURE_GRID,
+        SectionType.PROOF_BAND,
+    },
+}
 
 def normalize_requirements_payload(
     payload: dict[str, Any],
@@ -2323,13 +5157,47 @@ def normalize_requirements_payload(
         else {}
     )
 
+    behavioral_requirements = (
+        derive_behavioral_requirements(
+            state.behavioral_contexts
+        )
+    )
+
+
+    MINIMUM_REQUIRED_PAGES = [
+        PageType.HOME,
+        PageType.SERVICES,
+        PageType.CONTACT,
+    ]
+
+    MINIMUM_REQUIRED_WORKFLOWS = [
+        WorkflowType.LEAD,
+    ]
+
     required_pages = (
         candidate.get(
             "required_pages"
         )
         or rulebook.get(
-            "required_pages",
-            [],
+            "required_pages"
+        )
+        or MINIMUM_REQUIRED_PAGES
+    )
+
+    required_pages = (
+        remove_forbidden_semantics(
+            [
+                (
+                    page.value
+                    if hasattr(
+                        page,
+                        "value",
+                    )
+                    else str(page)
+                )
+                for page in required_pages
+            ],
+            state,
         )
     )
 
@@ -2338,9 +5206,9 @@ def normalize_requirements_payload(
             "required_workflows"
         )
         or rulebook.get(
-            "required_workflows",
-            [WorkflowType.LEAD],
+            "required_workflows"
         )
+        or MINIMUM_REQUIRED_WORKFLOWS
     )
 
     return {
@@ -2352,14 +5220,26 @@ def normalize_requirements_payload(
             required_workflows,
 
         "trust_requirements":
-            normalize_string_list(
-                candidate.get(
-                    "trust_requirements"
-                )
-                or rulebook.get(
-                    "must_prioritize",
-                    [],
-                )
+            remove_forbidden_semantics(
+                (
+                    normalize_string_list(
+                        candidate.get(
+                            "trust_requirements"
+                        )
+                        or rulebook.get(
+                            "must_prioritize",
+                            [],
+                        )
+                    )
+                    +
+                    normalize_string_list(
+                        behavioral_requirements.get(
+                            "trust_requirements",
+                            [],
+                        )
+                    )
+                ),
+                state,
             ),
 
         "compliance_requirements":
@@ -2371,14 +5251,26 @@ def normalize_requirements_payload(
             ),
 
         "conversion_priorities":
-            normalize_string_list(
-                candidate.get(
-                    "conversion_priorities"
-                )
-                or rulebook.get(
-                    "must_prioritize",
-                    [],
-                )
+            remove_forbidden_semantics(
+                (
+                    normalize_string_list(
+                        candidate.get(
+                            "conversion_priorities"
+                        )
+                        or rulebook.get(
+                            "must_prioritize",
+                            [],
+                        )
+                    )
+                    +
+                    normalize_string_list(
+                        behavioral_requirements.get(
+                            "conversion_priorities",
+                            [],
+                        )
+                    )
+                ),
+                state,
             ),
 
         "missing_information":
@@ -2422,13 +5314,119 @@ def normalize_candidate_set_payload(payload: dict[str, Any], state: WebsiteAgent
             candidate = nested
             break
     raw_candidates = []
-    if isinstance(candidate.get("candidates"), list):
+    if isinstance(payload.get("items"), list):
+        raw_candidates = payload["items"]
+    elif isinstance(candidate.get("candidates"), list):
         raw_candidates = candidate["candidates"]
     elif isinstance(candidate.get("DesignCandidateSet"), list):
         raw_candidates = candidate["DesignCandidateSet"]
     elif isinstance(payload.get("DesignCandidateSet"), list):
         raw_candidates = payload["DesignCandidateSet"]
     return {"candidates": [normalize_design_candidate(item, index, state) for index, item in enumerate(raw_candidates, start=1)]}
+
+
+def normalize_strategy_hypothesis_set_payload(payload: dict[str, Any], state: WebsiteAgentState) -> dict[str, Any]:
+    candidate = payload
+    for key in ("StrategyHypothesisSet", "strategy_hypothesis_set", "strategyHypothesisSet", "result"):
+        nested = payload.get(key)
+        if isinstance(nested, dict):
+            candidate = nested
+            break
+
+    raw_strategies = []
+    for key in ("strategies", "StrategyHypothesisSet", "strategyHypothesisSet"):
+        value = candidate.get(key) if isinstance(candidate, dict) else None
+        if isinstance(value, list):
+            raw_strategies = value
+            break
+    if not raw_strategies and isinstance(payload.get("strategyHypothesisSet"), list):
+        raw_strategies = payload["strategyHypothesisSet"]
+    if not raw_strategies and isinstance(payload.get("StrategyHypothesisSet"), list):
+        raw_strategies = payload["StrategyHypothesisSet"]
+
+    return {
+        "strategies": [
+            normalize_strategy_hypothesis(item, index, state)
+            for index, item in enumerate(raw_strategies, start=1)
+        ]
+    }
+
+
+def normalize_strategy_hypothesis(item: dict[str, Any], index: int, state: WebsiteAgentState) -> dict[str, Any]:
+    if not isinstance(item, dict):
+        item = {}
+
+    optimize_values = normalize_string_list(
+        item.get("what_it_optimizes")
+        or item.get("optimizes")
+        or item.get("strengths")
+        or []
+    )
+    sacrifice_values = normalize_string_list(
+        item.get("what_it_sacrifices")
+        or item.get("sacrifices")
+        or item.get("risks")
+        or []
+    )
+    user_values = normalize_string_list(
+        item.get("which_users_it_benefits")
+        or item.get("users_it_benefits")
+        or item.get("ideal_for")
+        or []
+    )
+    risk_values = normalize_string_list(
+        item.get("what_business_risks_it_creates")
+        or item.get("business_risks")
+        or item.get("risks")
+        or []
+    )
+
+    name = (
+        item.get("name")
+        or item.get("label")
+        or item.get("title")
+        or item.get("id")
+        or f"strategy-{index}"
+    )
+
+    core_thesis = (
+        item.get("core_thesis")
+        or item.get("coreThesis")
+        or item.get("summary")
+        or item.get("thesis")
+        or (optimize_values[0] if optimize_values else f"Strategy {index} prioritizes a distinct conversion path.")
+    )
+
+    target_behavior = (
+        item.get("target_behavior")
+        or item.get("targetBehavior")
+        or item.get("primary_user_behavior")
+        or item.get("primaryUserBehavior")
+        or "Guide visitors toward the primary business goal."
+    )
+
+    tradeoffs = normalize_string_list(
+        item.get("tradeoffs")
+        or item.get("trade_offs")
+        or item.get("tradeOffs")
+        or sacrifice_values
+    )
+
+    confidence = normalize_confidence(
+        item.get("confidence", 0.68)
+    )
+
+    return {
+        "strategy_id": item.get("strategy_id") or item.get("strategyId") or item.get("id") or f"strategy-{index}",
+        "name": str(name),
+        "core_thesis": str(core_thesis),
+        "target_behavior": str(target_behavior),
+        "strengths": optimize_values[:6],
+        "risks": risk_values[:6],
+        "ideal_for": user_values[:6],
+        "tradeoffs": tradeoffs[:6],
+        "confidence": confidence,
+    }
 
 
 def normalize_critique_set_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -2438,6 +5436,8 @@ def normalize_critique_set_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if isinstance(nested, dict):
             candidate = nested
             break
+    if isinstance(payload.get("items"), list):
+        return {"critiques": payload["items"]}
     if isinstance(candidate.get("critiques"), list):
         return {"critiques": candidate["critiques"]}
     if isinstance(candidate.get("CritiqueReportSet"), list):
@@ -2454,53 +5454,364 @@ def normalize_design_spec_payload(payload: dict[str, Any], state: WebsiteAgentSt
             return normalize_design_spec(nested, state)
     return normalize_design_spec(payload, state)
 
+def deduplicate_sections(
+    sections,
+):
+    seen = set()
 
-def normalize_design_candidate(candidate: dict[str, Any], index: int, state: WebsiteAgentState) -> dict[str, Any]:
-    mode = determine_candidate_mode(candidate)
+    cleaned = []
+
+    for section in sections:
+
+        section_type = (
+            getattr(
+                section,
+                "type",
+                None,
+            )
+            or section.get(
+                "type"
+            )
+        )
+
+        if hasattr(
+            section_type,
+            "value",
+        ):
+            section_key = (
+                section_type.value
+            )
+        else:
+            section_key = str(
+                section_type
+            )
+
+        section_key = (
+            section_key
+            .strip()
+            .lower()
+        )
+
+        if (
+            not section_key
+            or section_key in seen
+        ):
+            continue
+
+        seen.add(
+            section_key
+        )
+
+        cleaned.append(
+            section
+        )
+
+    return cleaned
+
+
+
+
+def normalize_design_candidate(
+    candidate: dict[str, Any],
+    index: int,
+    state: WebsiteAgentState,
+) -> dict[str, Any]:
+
+    mode = determine_candidate_mode(
+        candidate
+    )
 
     strategy = (
         state.strategy_hypotheses[
             min(
                 index - 1,
-                len(state.strategy_hypotheses) - 1,
+                len(
+                    state.strategy_hypotheses
+                ) - 1,
             )
         ]
         if state.strategy_hypotheses
         else None
     )
 
-    pages = candidate.get("pages") or candidate.get("page_specs") or candidate.get("page_plan") or []
-    if not isinstance(pages, list) or not pages:
-        pages = [
-            {"type": page_type.value if isinstance(page_type, PageType) else str(page_type)}
-            for page_type in (state.requirements_spec.required_pages if state.requirements_spec else [PageType.HOME])
+    behavioral_requirements = (
+        derive_behavioral_requirements(
+            state.behavioral_contexts
+        )
+    )
+
+    behavioral_sections = (
+        behavioral_requirements[
+            "recommended_sections"
         ]
+    )
+
+    pages = (
+        candidate.get("pages")
+        or candidate.get("page_specs")
+        or candidate.get("page_plan")
+        or []
+    )
+
+    if (
+        not isinstance(
+            pages,
+            list,
+        )
+        or not pages
+    ):
+
+        pages = [
+            {
+                "type": (
+                    page_type.value
+                    if isinstance(
+                        page_type,
+                        PageType,
+                    )
+                    else str(
+                        page_type
+                    )
+                )
+            }
+            for page_type in (
+                state.requirements_spec.required_pages
+                if state.requirements_spec
+                else [PageType.HOME]
+            )
+        ]
+
+    enriched_pages = []
+
+    for page in pages:
+
+        if not isinstance(
+            page,
+            dict,
+        ):
+
+            page = {
+                "type": str(page)
+            }
+
+        raw_page_type = str(
+            page.get(
+                "type",
+                "home",
+            )
+        ).lower()
+
+        try:
+
+            page_type = (
+                PageType(
+                    raw_page_type
+                )
+            )
+
+        except ValueError:
+
+            page_type = (
+                PageType.HOME
+            )
+
+        allowed_sections = (
+            PAGE_ROLE_SECTION_RULES.get(
+                page_type,
+                set(),
+            )
+        )
+
+        existing_sections = (
+            page.get("sections")
+            or []
+        )
+
+        if not isinstance(
+            existing_sections,
+            list,
+        ):
+            existing_sections = []
+
+        existing_section_types = set()
+
+        normalized_existing_sections = []
+
+        for section in existing_sections:
+
+            if isinstance(
+                section,
+                dict,
+            ):
+
+                section_type = str(
+                    section.get(
+                        "type",
+                        ""
+                    )
+                ).strip()
+
+            else:
+
+                section_type = str(
+                    section
+                ).strip()
+
+                section = {
+                    "type": section_type
+                }
+
+            try:
+
+                section_enum = (
+                    SectionType(
+                        section_type
+                    )
+                )
+
+            except ValueError:
+                continue
+
+            if (
+                section_enum
+                not in allowed_sections
+            ):
+                continue
+
+            existing_section_types.add(
+                section_type
+            )
+
+            normalized_existing_sections.append(
+                section
+            )
+
+        for behavioral_section in (
+            behavioral_sections
+        ):
+
+            try:
+
+                section_enum = (
+                    SectionType(
+                        behavioral_section
+                    )
+                )
+
+            except ValueError:
+                continue
+
+            if (
+                section_enum
+                not in allowed_sections
+            ):
+                continue
+
+            if (
+                behavioral_section
+                not in existing_section_types
+            ):
+
+                normalized_existing_sections.append(
+                    {
+                        "type": behavioral_section
+                    }
+                )
+
+        normalized_existing_sections = (
+            deduplicate_sections(
+                normalized_existing_sections
+            )
+        )
+
+        page["sections"] = (
+            normalized_existing_sections
+        )
+
+        enriched_pages.append(
+            page
+        )
+
     return {
-        "candidate_id": candidate.get("candidate_id") or candidate.get("id") or f"candidate_{index}",
+
+        "candidate_id": (
+            candidate.get(
+                "candidate_id"
+            )
+            or candidate.get("id")
+            or f"candidate_{index}"
+        ),
 
         "rationale": (
-            candidate.get("rationale")
-            or candidate.get("summary")
+            candidate.get(
+                "rationale"
+            )
+            or candidate.get(
+                "summary"
+            )
             or (
                 strategy.core_thesis
                 if strategy
                 else None
             )
-            or candidate.get("description")
+            or candidate.get(
+                "description"
+            )
             or candidate.get("name")
-            or "Model-generated candidate selected for business fit."
+            or (
+                "Model-generated "
+                "candidate selected "
+                "for business fit."
+            )
         ),
-        "confidence": normalize_confidence(candidate.get("confidence", 0.72)),
-        "visual_system": normalize_visual_system(
-            candidate.get("visual_system") or candidate.get("visual") or candidate.get("style") or {},
-            state,
-            mode,
+
+        "confidence": (
+            normalize_confidence(
+                candidate.get(
+                    "confidence",
+                    0.72,
+                )
+            )
         ),
-        "primary_action": normalize_primary_action(
-            candidate.get("primary_action") or candidate.get("cta") or candidate.get("call_to_action") or {},
-            state,
-            mode,
+
+        "visual_system": (
+            normalize_visual_system(
+                (
+                    candidate.get(
+                        "visual_system"
+                    )
+                    or candidate.get(
+                        "visual"
+                    )
+                    or candidate.get(
+                        "style"
+                    )
+                    or {}
+                ),
+                state,
+                mode,
+            )
         ),
+
+        "primary_action": (
+            normalize_primary_action(
+                (
+                    candidate.get(
+                        "primary_action"
+                    )
+                    or candidate.get(
+                        "cta"
+                    )
+                    or candidate.get(
+                        "call_to_action"
+                    )
+                    or {}
+                ),
+                state,
+                mode,
+            )
+        ),
+
         "pages": [
             normalize_page_spec(
                 page,
@@ -2508,12 +5819,16 @@ def normalize_design_candidate(candidate: dict[str, Any], index: int, state: Web
                 state,
                 mode,
             )
-            for page_index, page in enumerate(
-                pages,
+            for (
+                page_index,
+                page,
+            ) in enumerate(
+                enriched_pages,
                 start=1,
             )
         ],
     }
+
 
 
 def normalize_page_spec(page: dict[str, Any], index: int, state: WebsiteAgentState, mode: str = "conversion") -> dict[str, Any]:
@@ -2644,10 +5959,40 @@ def build_fallback_design_spec(state: WebsiteAgentState) -> dict[str, Any]:
 def choose_best_candidate(state: WebsiteAgentState):
     if not state.design_candidates:
         raise ValueError("cannot build fallback design spec without candidates")
-    critique_map = {report.candidate_id: average_critique_score(report) for report in state.critique_reports}
+    if (
+        state.finalization_decision
+        and state.finalization_decision.selected_candidate_id
+    ):
+        selected_id = (
+            state.finalization_decision
+            .selected_candidate_id
+        )
+        for candidate in (
+            state.design_candidates
+        ):
+            if (
+                candidate.candidate_id
+                == selected_id
+            ):
+                return candidate
+    ranked = candidate_decision_scores(
+        state
+    )
+    if ranked:
+        selected_id = ranked[0][
+            "candidate_id"
+        ]
+        for candidate in (
+            state.design_candidates
+        ):
+            if (
+                candidate.candidate_id
+                == selected_id
+            ):
+                return candidate
     return max(
         state.design_candidates,
-        key=lambda candidate: (critique_map.get(candidate.candidate_id, 0.0), candidate.confidence),
+        key=lambda candidate: candidate.confidence,
     )
 
 

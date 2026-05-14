@@ -10,6 +10,9 @@ from typing import Any, TypeVar
 import httpx
 from pydantic import BaseModel, ValidationError
 
+class PlannerGenerationError(Exception):
+    pass
+
 
 SchemaT = TypeVar(
     "SchemaT",
@@ -39,24 +42,44 @@ class ModelJsonPlanner:
 
     def __init__(
         self,
-        model_name: str = "openai",
+        model_name: str = "openai-large",
     ) -> None:
-        self.pollinations_url = "https://gen.pollinations.ai/v1/chat/completions"
-        self.api_key = os.getenv("POLLINATIONS_API_KEY", os.getenv("pollinations_api_key", ""))
-        configured_model = os.getenv("POLLINATIONS_TEXT_MODEL", os.getenv("pollinations_text_model", "")).strip()
-        self.model_name = configured_model or "openai"
-        self.degraded_mode = False
-        self.degraded_reason = ""
+
+        self.pollinations_url = (
+            "https://gen.pollinations.ai/v1/chat/completions"
+        )
+
+        self.api_key = os.getenv(
+            "POLLINATIONS_API_KEY",
+            os.getenv(
+                "pollinations_api_key",
+                "",
+            ),
+        )
+
+        configured_model = os.getenv(
+            "POLLINATIONS_TEXT_MODEL",
+            os.getenv(
+                "pollinations_text_model",
+                "",
+            ),
+        ).strip()
+
+        self.model_name = (
+            configured_model
+            or model_name
+        )
+
         self.failure_count = 0
-        self.failure_limit = 1
+
         self.request_errors: list[str] = []
 
     def begin_request(
         self,
     ) -> None:
-        self.degraded_mode = False
-        self.degraded_reason = ""
+
         self.failure_count = 0
+
         self.request_errors = []
 
     def register_failure(
@@ -64,22 +87,27 @@ class ModelJsonPlanner:
         stage: str,
         error: Exception | str,
     ) -> None:
+
         self.failure_count += 1
+
         message = f"{stage}: {error}"
-        self.request_errors.append(message)
-        if self.failure_count >= self.failure_limit:
-            self.degraded_mode = True
-            self.degraded_reason = message
+
+        self.request_errors.append(
+            message
+        )
 
     def get_health_status(
         self,
     ) -> dict[str, Any]:
+
         return {
-            "mode": "degraded_local_fallback" if self.degraded_mode else "external_pollinations",
-            "degraded": self.degraded_mode,
-            "reason": self.degraded_reason,
-            "failure_count": self.failure_count,
-            "errors": list(self.request_errors),
+            "mode": "external_pollinations",
+            "failure_count": (
+                self.failure_count
+            ),
+            "errors": list(
+                self.request_errors
+            ),
         }
 
     def generate_model(
@@ -158,8 +186,6 @@ class ModelJsonPlanner:
         prompt: str,
         max_new_tokens: int = 500,
     ) -> str:
-        if self.degraded_mode:
-            return "{}"
         last_error = None
         for _ in range(2):
             try:
@@ -186,6 +212,7 @@ class ModelJsonPlanner:
                                 }
                             ],
                             "temperature": 0,
+                            "max_tokens": max_new_tokens,
                         },
                         timeout=60.0
                     )
@@ -208,12 +235,16 @@ class ModelJsonPlanner:
                 last_error = e
                 continue
         if last_error is not None:
+
             self.register_failure(
                 "pollinations_generate",
                 last_error,
             )
-        print(f"Pollinations API error: {last_error}")
-        return "{}"
+
+        raise PlannerGenerationError(
+            f"Pollinations API error: "
+            f"{last_error}"
+        )
 
 
 def parse_json_object(
@@ -247,6 +278,17 @@ def parse_json_object(
             match.group(0)
         )
 
+    array_match = re.search(
+        r"\[.*\]",
+        cleaned,
+        flags=re.DOTALL,
+    )
+
+    if array_match:
+        candidates.append(
+            array_match.group(0)
+        )
+
     for candidate in dedupe_strings(
         candidates
     ):
@@ -259,6 +301,14 @@ def parse_json_object(
 
         if parsed is not None:
             return parsed
+
+    parsed_root = try_parse_json_root(
+        cleaned
+    )
+    if isinstance(parsed_root, list):
+        return {
+            "items": parsed_root
+        }
 
     raise ValueError(
         f"model did not return parseable JSON: "
@@ -299,6 +349,38 @@ def try_parse_json_candidate(
             if isinstance(literal, dict):
                 return literal
 
+        except (
+            ValueError,
+            SyntaxError,
+        ):
+            pass
+
+    return None
+
+
+def try_parse_json_root(
+    text: str,
+) -> Any:
+
+    for candidate in dedupe_strings(
+        [
+            text,
+            repair_json_like_text(text),
+            strip_trailing_commas(text),
+        ]
+    ):
+
+        try:
+            return json.loads(
+                candidate
+            )
+        except json.JSONDecodeError:
+            pass
+
+        try:
+            return ast.literal_eval(
+                candidate
+            )
         except (
             ValueError,
             SyntaxError,

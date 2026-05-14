@@ -16,7 +16,13 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from agentic_graph import run_agent_graph
-from agentic_models import AssetExtraction
+from agentic_models import (
+    AssetExtraction,
+    CognitiveProvenanceRecord,
+    ProvenanceSource,
+    ReasoningLineageEntry,
+    StateArtifactStatus,
+)
 from agentic_planner import ModelJsonPlanner
 from buildspec_planner import generate_build_spec
 
@@ -61,7 +67,7 @@ app.add_middleware(
 )
 
 POLLINATIONS_VISION_URL = "https://gen.pollinations.ai/v1/chat/completions"
-POLLINATIONS_VISION_MODEL = os.getenv("POLLINATIONS_VISION_MODEL", os.getenv("pollinations_vision_model", "openai"))
+POLLINATIONS_VISION_MODEL = os.getenv("POLLINATIONS_VISION_MODEL", os.getenv("pollinations_vision_model", "openai-large"))
 POLLINATIONS_API_KEY = os.getenv("POLLINATIONS_API_KEY", os.getenv("pollinations_api_key", ""))
 json_planner = None
 
@@ -215,7 +221,7 @@ def startup() -> None:
     logger.info("Starting up AMD inference server")
     global json_planner
 
-    json_planner = ModelJsonPlanner("phi3:mini")
+    json_planner = ModelJsonPlanner()
 
     logger.info("Pollinations.ai vision model ready.")
 
@@ -418,16 +424,23 @@ def build_fallback_graph_execution(
     profile: dict[str, Any],
     asset_extractions: list[dict[str, Any]],
     planner_status: dict[str, Any] | None = None,
+    graph_error: str = "",
 ) -> dict[str, Any]:
     planner_status = planner_status or {}
     reasoning_notes = [
         "Agent graph fallback mode was used because the external planning model failed.",
     ]
+    if graph_error:
+        reasoning_notes.append(
+            f"Graph execution fallback reason: {graph_error}"
+        )
     if planner_status.get("degraded"):
         reasoning_notes.append(
             f"Planner entered degraded mode: {planner_status.get('reason') or 'external planner unavailable.'}"
         )
     return {
+        "status": "fallback",
+        "graph_error": graph_error,
         "final_state": {
             "business_input": profile,
             "uploaded_asset_paths": [item.get("image", "") for item in asset_extractions],
@@ -441,8 +454,47 @@ def build_fallback_graph_execution(
             "design_candidates": [],
             "critique_reports": [],
             "design_spec": None,
+            "finalization_decision": None,
             "qa_notes": [],
             "reasoning_notes": reasoning_notes,
+            "provenance_log": [
+                CognitiveProvenanceRecord(
+                    artifact_key="graph_execution",
+                    stage="fallback",
+                    source_type=ProvenanceSource.LOCAL_FALLBACK,
+                    summary="Graph execution fell back to deterministic response packaging.",
+                    confidence=0.35,
+                    fallback_used=True,
+                    iteration=0,
+                    supporting_keys=["business_input", "asset_extractions"],
+                ).model_dump()
+            ],
+            "reasoning_lineage": [
+                ReasoningLineageEntry(
+                    stage="fallback",
+                    decision="returned_fallback_graph_execution",
+                    confidence=0.35,
+                    fallback_used=True,
+                    inputs=["business_input", "asset_extractions"],
+                    outputs=["graph_execution"],
+                    summary=graph_error or "Graph did not complete normally.",
+                ).model_dump()
+            ],
+            "state_artifacts": {
+                "graph_execution": StateArtifactStatus(
+                    artifact_key="graph_execution",
+                    status="fallback",
+                    source_type=ProvenanceSource.LOCAL_FALLBACK,
+                    confidence=0.35,
+                    updated_in_stage="fallback",
+                    summary="Fallback graph execution returned.",
+                    lineage_ref="fallback:graph_execution:0",
+                ).model_dump()
+            },
+            "active_fallbacks": ["fallback:graph_execution"],
+            "memory_query": None,
+            "retrieved_memories": [],
+            "tool_invocations": [],
             "reflection_report": None,
             "uncertainty_score": 0.0,
             "debate_outcome": None,
@@ -538,6 +590,52 @@ def collect_external_failures(
     return failures
 
 
+async def process_uploaded_files(
+    files: list[UploadFile] | None,
+) -> list[dict[str, Any]]:
+    normalized_extractions: list[dict[str, Any]] = []
+    if not files:
+        return normalized_extractions
+
+    for upload in files:
+        if upload is None:
+            continue
+        file_bytes = await upload.read()
+        if not file_bytes:
+            continue
+        extraction = await process_image_with_pollinations(
+            file_bytes,
+            upload.filename or "uploaded-image",
+        )
+        normalized_extractions.append(
+            normalize_asset_extraction_payload(
+                extraction
+            )
+        )
+
+    return normalized_extractions
+
+
+def normalize_supplied_extractions(
+    raw_extractions: Any,
+) -> list[dict[str, Any]]:
+    if not isinstance(raw_extractions, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for item in raw_extractions:
+        if isinstance(item, dict):
+            normalized.append(
+                normalize_asset_extraction_payload(
+                    {
+                        "image": item.get("image", ""),
+                        "parsed": item,
+                        "status": "success",
+                    }
+                )
+            )
+    return normalized
+
+
 @app.post("/generate-buildspec")
 async def generate_buildspec(
     request: Request,
@@ -545,7 +643,7 @@ async def generate_buildspec(
     files: list[UploadFile] | None = File(default=None),
 ) -> dict[str, Any]:
     parsed_payload = await extract_request_payload(request, payload)
-    planner = ModelJsonPlanner("phi3:mini")
+    planner = ModelJsonPlanner()
     planner.begin_request()
 
     logger.info("Received generate_buildspec request")
@@ -574,19 +672,13 @@ async def generate_buildspec(
         logger.debug(f"Extracted business profile: {profile}")
 
         business_details = profile.get("details", "")
-        normalized_extractions: list[dict[str, Any]] = []
-
-        if files:
-            for upload in files:
-                if upload is None:
-                    continue
-                file_bytes = await upload.read()
-                if not file_bytes:
-                    continue
-                extraction = await process_image_with_pollinations(file_bytes, upload.filename or "uploaded-image")
-                normalized_extractions.append(
-                    normalize_asset_extraction_payload(extraction)
-                )
+        normalized_extractions = normalize_supplied_extractions(
+            parsed_payload.get("asset_extractions")
+        )
+        if not normalized_extractions:
+            normalized_extractions = await process_uploaded_files(
+                files
+            )
 
         asset_signals = asset_signals_from_extractions(normalized_extractions)
 
@@ -628,6 +720,7 @@ async def generate_buildspec(
                 profile,
                 normalized_extractions,
                 planner_status,
+                str(graph_error),
             )
 
         planner_status = planner.get_health_status()
@@ -648,6 +741,10 @@ async def generate_buildspec(
             "assetExtractions": normalized_extractions,
             "buildSpec": build_spec,
             "graphExecution": agent_state,
+            "graphStatus": {
+                "status": agent_state.get("status", "completed"),
+                "error": agent_state.get("graph_error", ""),
+            },
             "plannerMode": planner_status.get("mode", "external_pollinations"),
             "visionMode": vision_mode,
             "externalFailures": external_failures,
@@ -655,3 +752,45 @@ async def generate_buildspec(
     except Exception as e:
         logger.exception(f"Error in generate_buildspec: {e}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@app.post("/extract-assets")
+async def extract_assets(
+    request: Request,
+    payload: str | None = Form(default=None),
+    files: list[UploadFile] | None = File(default=None),
+) -> dict[str, Any]:
+    parsed_payload = await extract_request_payload(request, payload)
+    logger.info("Received extract_assets request")
+    logger.debug(f"Extract assets payload: {parsed_payload}")
+
+    normalized_extractions = await process_uploaded_files(
+        files
+    )
+    asset_signals = asset_signals_from_extractions(
+        normalized_extractions
+    )
+    planner_status = {
+        "mode": "vision_only",
+        "degraded": False,
+        "reason": "",
+        "failure_count": 0,
+        "errors": [],
+    }
+    external_failures = collect_external_failures(
+        normalized_extractions,
+        planner_status,
+    )
+    vision_mode = (
+        "unavailable"
+        if any(item.get("processing_status") != "success" for item in normalized_extractions)
+        else ("unused" if not normalized_extractions else "pollinations_vision")
+    )
+
+    return {
+        "source": "pollinations-vision-extraction",
+        "assetSignals": asset_signals,
+        "assetExtractions": normalized_extractions,
+        "visionMode": vision_mode,
+        "externalFailures": external_failures,
+    }
