@@ -748,6 +748,17 @@ async def generate_buildspec(
             "plannerMode": planner_status.get("mode", "external_pollinations"),
             "visionMode": vision_mode,
             "externalFailures": external_failures,
+            "cognitive_events": [
+                (
+                    event.model_dump()
+                    if hasattr(event, "model_dump")
+                    else event
+                )
+                for event in agent_state.get(
+                    "cognitive_events",
+                    [],
+                )
+            ],
         }
     except Exception as e:
         logger.exception(f"Error in generate_buildspec: {e}")

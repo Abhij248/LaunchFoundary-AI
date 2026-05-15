@@ -2,7 +2,7 @@ from __future__ import annotations
 import logging
 logger = logging.getLogger(__name__)
 
-
+from datetime import datetime
 from textwrap import dedent
 from typing import Any
 
@@ -40,6 +40,7 @@ from business_archetype_mapper import (
 )
 
 from agentic_models import (
+    CognitiveEvent,
     CognitiveHealthReport,
     AgentDecision,
     SimulationReport,
@@ -84,6 +85,15 @@ except ImportError:  # pragma: no cover
     START = "START"
     StateGraph = None
 
+
+def add_uncertainty(
+    state,
+    amount,
+):
+    state.uncertainty_score = min(
+        1.0,
+        state.uncertainty_score + amount,
+    )
 
 def infer_vertical_from_business_input(
     state: WebsiteAgentState | None,
@@ -215,6 +225,31 @@ def add_reasoning_note(
         message
     )
 
+def emit_cognitive_event(
+    state: WebsiteAgentState,
+    event_type: str,
+    stage: str,
+    title: str,
+    summary: str,
+    confidence: float | None = None,
+    candidate_id: str | None = None,
+    metadata: dict | None = None,
+) -> None:
+
+    event = CognitiveEvent(
+        timestamp=datetime.utcnow().isoformat(),
+        event_type=event_type,
+        stage=stage,
+        title=title,
+        summary=summary,
+        confidence=confidence,
+        candidate_id=candidate_id,
+        metadata=metadata or {},
+    )
+
+    state.cognitive_events.append(
+        event
+    )
 
 def record_provenance(
     state: WebsiteAgentState,
@@ -366,7 +401,7 @@ def candidate_decision_scores(
         or []
     ):
         critique_score = critique_map.get(
-            candidate.candidate_id,
+            candidate_attr(candidate, "candidate_id", "unknown"),
             0.0,
         )
         confidence = normalize_confidence(
@@ -375,7 +410,7 @@ def candidate_decision_scores(
         debate_bonus = (
             0.35
             if debate_bonus_id
-            and debate_bonus_id == candidate.candidate_id
+            and debate_bonus_id == candidate_attr(candidate,"candidate_id","unknown",)
             else 0.0
         )
         realism_factor = (
@@ -397,7 +432,7 @@ def candidate_decision_scores(
         )
         results.append(
             {
-                "candidate_id": candidate.candidate_id,
+                "candidate_id": candidate_attr(candidate, "candidate_id", "unknown"),
                 "weighted_score": weighted_score,
                 "critique_score": round(
                     critique_score,
@@ -1363,7 +1398,7 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
             )
 
-            state.uncertainty_score += 0.15
+            add_uncertainty(state, 0.15)
 
             normalized = (
                 normalize_business_profile_payload(
@@ -1381,7 +1416,22 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
             )
 
-        except ValidationError:
+        except ValidationError as exc:
+
+            print("\n====================")
+            print("VALIDATION ERROR")
+            print("====================\n")
+
+            print(exc)
+
+            print("\n====================")
+            print("RAW MODEL OUTPUT")
+            print("====================\n")
+
+            print(raw)
+
+            print("\n====================\n")
+
             fallback_used = True
             source_type = ProvenanceSource.HEURISTIC_FALLBACK
 
@@ -1756,19 +1806,19 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
         state: WebsiteAgentState,
     ) -> WebsiteAgentState:
         
-        state.execution_trace.append(
-            "requirements"
-        )
+        # state.execution_trace.append(
+        #     "requirements"
+        # )
 
-        state.node_visit_counts[
-            "requirements"
-        ] = (
-            state.node_visit_counts.get(
-                "requirements",
-                0,
-            )
-            + 1
-        )
+        # state.node_visit_counts[
+        #     "requirements"
+        # ] = (
+        #     state.node_visit_counts.get(
+        #         "requirements",
+        #         0,
+        #     )
+        #     + 1
+        # )
         fallback_used = False
         source_type = ProvenanceSource.EXTERNAL_MODEL
         tool_context = invoke_cognition_tools(
@@ -1816,7 +1866,7 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
             )
 
-            state.uncertainty_score += 0.15
+            add_uncertainty(state, 0.15)
 
             normalized = (
                 normalize_requirements_payload(
@@ -1829,6 +1879,18 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
             RequirementsSpec.model_validate(
                 normalized
             )
+        )
+
+        emit_cognitive_event(
+            state=state,
+            event_type="requirements_generated",
+            stage="requirements",
+            title="Business Understanding Complete",
+            summary=(
+                "Generated structured business "
+                "requirements and workflow priorities"
+            ),
+            confidence=0.84,
         )
 
         req_confidence = max(
@@ -1874,24 +1936,25 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
         )
 
         return state
-    @register_node("strategy")
+    
+    @register_node("strategy_hypotheses")
     def strategy_hypothesis_node(
         state: WebsiteAgentState,
     ) -> WebsiteAgentState:
 
-        state.execution_trace.append(
-            "strategy_hypotheses"
-        )
+        # state.execution_trace.append(
+        #     "strategy_hypotheses"
+        # )
 
-        state.node_visit_counts[
-            "strategy_hypotheses"
-        ] = (
-            state.node_visit_counts.get(
-                "strategy_hypotheses",
-                0,
-            )
-            + 1
-        )
+        # state.node_visit_counts[
+        #     "strategy_hypotheses"
+        # ] = (
+        #     state.node_visit_counts.get(
+        #         "strategy_hypotheses",
+        #         0,
+        #     )
+        #     + 1
+        # )
         fallback_used = False
         source_type = ProvenanceSource.EXTERNAL_MODEL
         tool_context = invoke_cognition_tools(
@@ -1939,7 +2002,7 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
             )
 
-            state.uncertainty_score += 0.15
+            add_uncertainty(state, 0.15)
 
             hypotheses = (
                 build_fallback_strategy_hypotheses(
@@ -1947,7 +2010,11 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
             )
 
-        except (ValidationError, ValueError):
+        except (ValidationError,ValueError,) as exc:
+            print("\nVALIDATION ERROR\n")
+            print(exc)
+            print("\nRAW OUTPUT\n")
+            print(raw)
             fallback_used = True
             source_type = ProvenanceSource.LOCAL_FALLBACK
 
@@ -1960,7 +2027,7 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
             )
 
-            state.uncertainty_score += 0.1
+            add_uncertainty(state, 0.1)
 
             hypotheses = (
                 build_fallback_strategy_hypotheses(
@@ -1970,6 +2037,23 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
 
         state.strategy_hypotheses = (
             hypotheses.strategies
+        )
+
+        emit_cognitive_event(
+            state=state,
+            event_type="strategy_created",
+            stage="strategy_generation",
+            title="Generated Strategic Directions",
+            summary=(
+                "Generated competing behavioral "
+                "strategies for conversion optimization"
+            ),
+            confidence=0.78,
+            metadata={
+                "strategy_count": len(
+                    state.strategy_hypotheses
+                ),
+            },
         )
         strategy_confidence = (
             sum(item.confidence for item in state.strategy_hypotheses) / max(len(state.strategy_hypotheses), 1)
@@ -2012,7 +2096,7 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
         )
 
         return state
-    @register_node("design")
+    @register_node("design_candidates")
     def design_candidates_node(
         state: WebsiteAgentState,
     ) -> WebsiteAgentState:
@@ -2072,7 +2156,7 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
             )
 
-            state.uncertainty_score += 0.15
+            add_uncertainty(state, 0.15)
 
             candidates = (
                 build_fallback_design_candidates(
@@ -2080,7 +2164,11 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
             )
 
-        except (ValidationError, ValueError):
+        except (ValidationError, ValueError) as exc:
+            print("\nVALIDATION ERROR\n")
+            print(exc)
+            print("\nRAW OUTPUT\n")
+            print(raw)   
             fallback_used = True
             source_type = ProvenanceSource.LOCAL_FALLBACK
 
@@ -2092,7 +2180,7 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
             )
 
-            state.uncertainty_score += 0.1
+            add_uncertainty(state, 0.1)
 
             candidates = (
                 build_fallback_design_candidates(
@@ -2102,6 +2190,42 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
         state.design_candidates = (
             candidates.candidates
         )
+
+
+        for candidate in state.design_candidates:
+
+            emit_cognitive_event(
+                state=state,
+                event_type="design_candidates_generated",
+                stage="design_generation",
+                title="Generated Design Candidate",
+                summary=(
+                    "Created adaptive layout candidate "
+                    "for behavioral optimization"
+                ),
+                confidence=getattr(
+                    candidate,
+                    "confidence",
+                    0.75,
+                ),
+                candidate_id=candidate_attr(
+                    candidate,
+                    "candidate_id",
+                    "unknown_candidate",
+                ),
+                metadata={
+                    "candidate_count": len(
+                        state.design_candidates
+                    ),
+                    "pages": len(
+                        candidate_attr(
+                            candidate,
+                            "pages",
+                            [],
+                        )
+                    ),
+                },
+            )
         state.candidate_history.append(
             {
                 "iteration": state.revision_iteration,
@@ -2164,19 +2288,19 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
             CognitiveStateAPI(state)
         )
 
-        state.execution_trace.append(
-            "critique"
-        )
+        # state.execution_trace.append(
+        #     "critique"
+        # )
 
-        state.node_visit_counts[
-            "critique"
-        ] = (
-            state.node_visit_counts.get(
-                "critique",
-                0,
-            )
-            + 1
-        )
+        # state.node_visit_counts[
+        #     "critique"
+        # ] = (
+        #     state.node_visit_counts.get(
+        #         "critique",
+        #         0,
+        #     )
+        #     + 1
+        # )
         fallback_used = False
         source_type = ProvenanceSource.EXTERNAL_MODEL
         tool_context = invoke_cognition_tools(
@@ -2231,7 +2355,7 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
             )
 
-            state.uncertainty_score += 0.15
+            add_uncertainty(state, 0.15)
 
             critiques = CritiqueReportSet(
                 critiques=[
@@ -2246,7 +2370,11 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 ]
             )
 
-        except (ValidationError, ValueError):
+        except (ValidationError, ValueError) as exc:
+            print("\nVALIDATION ERROR\n")
+            print(exc)
+            print("\nRAW OUTPUT\n")
+            print(raw)
             fallback_used = True
             source_type = ProvenanceSource.LOCAL_FALLBACK
 
@@ -2258,7 +2386,7 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
             )
 
-            state.uncertainty_score += 0.1
+            add_uncertainty(state, 0.1)
 
             critiques = CritiqueReportSet(
                 critiques=[
@@ -2363,19 +2491,19 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
          
         cognition = (CognitiveStateAPI(state))
         
-        state.execution_trace.append(
-            "reflection"
-        )
+        # state.execution_trace.append(
+        #     "reflection"
+        # )
 
-        state.node_visit_counts[
-            "reflection"
-        ] = (
-            state.node_visit_counts.get(
-                "reflection",
-                0,
-            )
-            + 1
-        )
+        # state.node_visit_counts[
+        #     "reflection"
+        # ] = (
+        #     state.node_visit_counts.get(
+        #         "reflection",
+        #         0,
+        #     )
+        #     + 1
+        # )
         fallback_used = False
         source_type = ProvenanceSource.EXTERNAL_MODEL
         tool_context = invoke_cognition_tools(
@@ -2415,7 +2543,7 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
             )
 
-            state.uncertainty_score += 0.15
+            add_uncertainty(state, 0.15)
 
             reflection = (
                 build_fallback_reflection_report(
@@ -2423,7 +2551,11 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
             )
 
-        except (ValidationError, ValueError):
+        except (ValidationError, ValueError) as exc:
+            print("\nVALIDATION ERROR\n")
+            print(exc)
+            print("\nRAW OUTPUT\n")
+            print(locals().get("raw"))
             fallback_used = True
             source_type = ProvenanceSource.LOCAL_FALLBACK
 
@@ -2434,7 +2566,7 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
             )
 
-            state.uncertainty_score += 0.1
+            add_uncertainty(state, 0.1)
 
             reflection = (
                 build_fallback_reflection_report(
@@ -2584,6 +2716,7 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
             )
         )
         return state
+    
     @register_node("debate")
     def debate_node(
         state: WebsiteAgentState,
@@ -2627,7 +2760,7 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
             )
 
-            state.uncertainty_score += 0.15
+            add_uncertainty(state, 0.15)
 
             outcome = (
                 build_fallback_debate_outcome(
@@ -2635,7 +2768,11 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
             )
 
-        except (ValidationError, ValueError):
+        except (ValidationError, ValueError) as exc:
+            print("\nVALIDATION ERROR\n")
+            print(exc)
+            print("\nRAW OUTPUT\n")
+            print(locals().get("raw"))
             fallback_used = True
             source_type = ProvenanceSource.LOCAL_FALLBACK
 
@@ -2646,7 +2783,7 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
             )
 
-            state.uncertainty_score += 0.1
+            add_uncertainty(state, 0.1)
 
             outcome = (
                 build_fallback_debate_outcome(
@@ -2719,25 +2856,26 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
         state: WebsiteAgentState,
     ) -> WebsiteAgentState:
 
-        state.execution_trace.append(
-            "simulation"
-        )
+        # state.execution_trace.append(
+        #     "simulation"
+        # )
 
-        state.node_visit_counts[
-            "simulation"
-        ] = (
-            state.node_visit_counts.get(
-                "simulation",
-                0,
-            )
-            + 1
-        )
+        # state.node_visit_counts[
+        #     "simulation"
+        # ] = (
+        #     state.node_visit_counts.get(
+        #         "simulation",
+        #         0,
+        #     )
+        #     + 1
+        # )
         fallback_used = False
         source_type = ProvenanceSource.EXTERNAL_MODEL
         tool_context = invoke_cognition_tools(
             state,
             "simulation",
         )
+        raw = None
 
         prompt = build_simulation_prompt(
             state,
@@ -2745,12 +2883,19 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
         )
 
         try:
-
-            simulation = (
-                planner.generate_model(
-                    prompt,
-                    SimulationReport,
-                )
+            raw = planner.generate_text(
+                prompt,
+                max_new_tokens=520,
+            )
+            parsed = parse_json_object(
+                raw
+            )
+            normalized = normalize_simulation_report_payload(
+                parsed,
+                state,
+            )
+            simulation = SimulationReport.model_validate(
+                normalized
             )
 
         except PlannerGenerationError as exc:
@@ -2771,7 +2916,7 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
             )
 
-            state.uncertainty_score += 0.15
+            add_uncertainty(state, 0.15)
 
             simulation = (
                 build_fallback_simulation_report(
@@ -2779,7 +2924,11 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
             )
 
-        except (ValidationError, ValueError):
+        except (ValidationError, ValueError) as exc:
+            print("\nVALIDATION ERROR\n")
+            print(exc)
+            print("\nRAW OUTPUT\n")
+            print(locals().get("raw"))
             fallback_used = True
             source_type = ProvenanceSource.LOCAL_FALLBACK
 
@@ -2790,7 +2939,7 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
             )
 
-            state.uncertainty_score += 0.1
+            add_uncertainty(state, 0.1)
 
             simulation = (
                 build_fallback_simulation_report(
@@ -3367,22 +3516,18 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
         state: WebsiteAgentState,
     ) -> str:
 
-        state.node_visit_counts[
-            "requirements"
-        ] = (
+        requirements_visits = (
             state.node_visit_counts.get(
                 "requirements",
                 0,
-            )
-            + 1
+            ) + 1
         )
 
-        if (
-            state.node_visit_counts[
-                "requirements"
-            ]
-            >= 3
-        ):
+        state.node_visit_counts[
+            "requirements"
+        ] = requirements_visits
+
+        if requirements_visits >= 3:
 
             state.reasoning_notes.append(
                 (
@@ -3391,12 +3536,12 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
             )
 
-            state.execution_trace.append(
-                (
-                    "requirements -> strategy_hypotheses "
-                    "(loop protection)"
-                )
-            )
+            # state.execution_trace.append(
+            #     (
+            #         "requirements -> strategy_hypotheses "
+            #         "(loop protection)"
+            #     )
+            # )
 
             return "strategy_hypotheses"
 
@@ -3411,11 +3556,11 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
             )
 
-            state.execution_trace.append(
-                (
-                    "requirements -> memory_retrieval"
-                )
-            )
+            # state.execution_trace.append(
+            #     (
+            #         "requirements -> memory_retrieval"
+            #     )
+            # )
 
             return "memory_retrieval"
 
@@ -3426,11 +3571,11 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
             )
         )
 
-        state.execution_trace.append(
-            (
-                "requirements -> strategy_hypotheses"
-            )
-        )
+        # state.execution_trace.append(
+        #     (
+        #         "requirements -> strategy_hypotheses"
+        #     )
+        # )
 
         return "strategy_hypotheses"
 
@@ -3438,22 +3583,18 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
         state: WebsiteAgentState,
     ) -> str:
 
-        state.node_visit_counts[
-            "strategy_hypotheses"
-        ] = (
+        strategy_visits = (
             state.node_visit_counts.get(
                 "strategy_hypotheses",
                 0,
-            )
-            + 1
+            ) + 1
         )
 
-        if (
-            state.node_visit_counts[
-                "strategy_hypotheses"
-            ]
-            >= 3
-        ):
+        state.node_visit_counts[
+            "strategy_hypotheses"
+        ] = strategy_visits
+
+        if strategy_visits >= 3:
 
             state.reasoning_notes.append(
                 (
@@ -3462,12 +3603,12 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
             )
 
-            state.execution_trace.append(
-                (
-                    "strategy_hypotheses -> design_candidates "
-                    "(loop protection)"
-                )
-            )
+            # state.execution_trace.append(
+            #     (
+            #         "strategy_hypotheses -> design_candidates "
+            #         "(loop protection)"
+            #     )
+            # )
 
             return "design_candidates"
 
@@ -3482,11 +3623,11 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
             )
 
-            state.execution_trace.append(
-                (
-                    "strategy_hypotheses -> strategy_hypotheses"
-                )
-            )
+            # state.execution_trace.append(
+            #     (
+            #         "strategy_hypotheses -> strategy_hypotheses"
+            #     )
+            # )
 
             return "strategy_hypotheses"
 
@@ -3497,11 +3638,11 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
             )
         )
 
-        state.execution_trace.append(
-            (
-                "strategy_hypotheses -> design_candidates"
-            )
-        )
+        # state.execution_trace.append(
+        #     (
+        #         "strategy_hypotheses -> design_candidates"
+        #     )
+        # )
 
         return "design_candidates"
 
@@ -3515,21 +3656,16 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
             )
         )
 
-        state.node_visit_counts[
-            "critique"
-        ] = (
+        critique_count = (
             state.node_visit_counts.get(
                 "critique",
                 0,
-            )
-            + 1
+            ) + 1
         )
 
-        critique_count = (
-            state.node_visit_counts[
-                "critique"
-            ]
-        )
+        state.node_visit_counts[
+            "critique"
+        ] = critique_count
 
         if critique_count >= 4:
 
@@ -3540,9 +3676,9 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
             )
 
-            state.execution_trace.append(
-                "critique -> revise (loop protection)"
-            )
+            # state.execution_trace.append(
+            #     "critique -> revise (loop protection)"
+            # )
 
             return "revise"
 
@@ -3555,11 +3691,11 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
             )
 
-            state.execution_trace.append(
-                (
-                    "critique -> strategy_hypotheses"
-                )
-            )
+            # state.execution_trace.append(
+            #     (
+            #         "critique -> strategy_hypotheses"
+            #     )
+            # )
 
             return "strategy_hypotheses"
 
@@ -3570,11 +3706,11 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
             )
         )
 
-        state.execution_trace.append(
-            (
-                "critique -> reflection"
-            )
-        )
+        # state.execution_trace.append(
+        #     (
+        #         "critique -> reflection"
+        #     )
+        # )
 
         return "reflection"
 
@@ -3748,14 +3884,14 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
         reflection_router,
     )
 
-    graph.add_conditional_edges(
+    graph.add_edge(
         "debate",
-        debate_router,
+        "simulation",
     )
 
-    graph.add_conditional_edges(
+    graph.add_edge(
         "simulation",
-        critique_router,
+        "revise",
     )
 
     graph.add_edge(
@@ -3856,10 +3992,6 @@ def run_agent_graph(
 
     final_state = None
 
-    # Global termination guards:
-    # - Max number of streamed updates
-    # - Loop signature consecutive repeat cap, evaluated only at cycle checkpoints
-    #   so normal within-pass node updates do not look like a planning loop.
     MAX_STREAM_UPDATES = 60
     MAX_SIGNATURE_REPEATS = 4
 
@@ -3895,6 +4027,32 @@ def run_agent_graph(
 
         merged = current_state.model_dump()
 
+        event_nodes = {
+            key
+            for key in serialized.keys()
+            if isinstance(
+                key,
+                str,
+            )
+        }
+
+        # CENTRALIZED GRAPH OBSERVABILITY
+        for node_name in event_nodes:
+
+            current_state.execution_trace.append(
+                node_name
+            )
+
+            current_state.node_visit_counts[
+                node_name
+            ] = (
+                current_state.node_visit_counts.get(
+                    node_name,
+                    0,
+                )
+                + 1
+            )
+
         if isinstance(
             serialized,
             dict,
@@ -3913,6 +4071,14 @@ def run_agent_graph(
                         node_update
                     )
 
+        merged["execution_trace"] = (
+            current_state.execution_trace
+        )
+
+        merged["node_visit_counts"] = (
+            current_state.node_visit_counts
+        )
+
         current_state = (
             WebsiteAgentState.model_validate(
                 merged
@@ -3924,15 +4090,6 @@ def run_agent_graph(
         checkpoint_nodes = {
             "simulation",
             "design_candidates",
-        }
-
-        event_nodes = {
-            key
-            for key in serialized.keys()
-            if isinstance(
-                key,
-                str,
-            )
         }
 
         if (
@@ -3970,8 +4127,9 @@ def run_agent_graph(
                 ):
 
                     raise RuntimeError(
-                        "graph appears to be stuck in a planning loop (cycle signature repeated "
-                        f"{MAX_SIGNATURE_REPEATS} times at cycle checkpoints)."
+                        "graph appears to be stuck in a planning loop "
+                        f"(cycle signature repeated "
+                        f"{MAX_SIGNATURE_REPEATS} times)."
                     )
 
     try:
@@ -4125,8 +4283,8 @@ def compact_candidate_context(state: WebsiteAgentState) -> list[dict[str, Any]]:
     for candidate in (state.design_candidates or [])[:3]:
         compacted.append(
             {
-                "id": candidate.candidate_id,
-                "rationale": candidate.rationale,
+                "id": candidate_attr(candidate, "candidate_id", "unknown"),
+                "rationale": candidate_attr(candidate,"rationale","",),
                 "primary_action": candidate.primary_action.label,
                 "pages": [
                     {
@@ -4136,7 +4294,8 @@ def compact_candidate_context(state: WebsiteAgentState) -> list[dict[str, Any]]:
                             for section in page.sections[:5]
                         ],
                     }
-                    for page in candidate.pages[:4]
+                   
+                    for page in candidate_attr(candidate,"pages",[],)[:4]
                 ],
                 "confidence": round(candidate.confidence, 2),
             }
@@ -4217,11 +4376,11 @@ def build_requirements_prompt(
         Asset evidence tool:
         {tool_context.get("asset_evidence", {})}
 
-        Memory guidance tool:
-        {tool_context.get("memory_guidance", {})}
+        # Memory guidance tool:
+        # {tool_context.get("memory_guidance", {})}
 
-        Process health tool:
-        {tool_context.get("process_health", {})}
+        # Process health tool:
+        # {tool_context.get("process_health", {})}
 
         Requirements:
         - choose required pages from the allowed enum values
@@ -4284,80 +4443,55 @@ def build_strategy_prompt(
         Asset evidence tool:
         {tool_context.get("asset_evidence", {})}
 
-        Memory guidance tool:
-        {tool_context.get("memory_guidance", {})}
+        # Memory guidance tool:
+        # {tool_context.get("memory_guidance", {})}
 
-        Process health tool:
-        {tool_context.get("process_health", {})}
+        # Process health tool:
+        # {tool_context.get("process_health", {})}
 
-        Requirements:
+       Requirements:
 
-        - generate 2 genuinely
-          distinct website
-          strategies
+        - generate exactly 2 distinct strategies
+        - optimize for different user behaviors
+        - include strengths, risks, and tradeoffs
+        - use concise phrases only
+        - avoid generic wording
+        - confidence should reflect business fit
 
-        - each strategy must
-          optimize for different
-          user behavior
+        - vary:
+        - CTA aggressiveness
+        - trust depth
+        - browsing friction
+        - workflow priority
 
-        - strategies must involve
-          real tradeoffs
+        Return STRICT JSON ONLY.
 
-        - avoid generic labels like:
-          "good UX"
-          "clean design"
+        Rules:
+        - every string max 12 words
+        - strengths max 6 words each
+        - risks max 6 words each
+        - tradeoffs max 8 words each
+        - target_behavior max 10 words
+        - core_thesis max 15 words
+        - ideal_for max 4 words each
 
-        - strategies should differ in:
-          - urgency
-          - trust depth
-          - browsing friction
-          - CTA aggressiveness
-          - educational depth
-          - exploration behavior
-          - workflow prioritization
+        Required schema:
 
-        - explain:
-          - what this strategy optimizes
-          - what it sacrifices
-          - which users it benefits
-          - what business risks it creates
-
-        - confidence should reflect
-          how strongly the strategy
-          matches the business evidence
-
-        - if uncertainty is high:
-          - generate more strategically
-            diverse hypotheses
-          - explore alternative business
-            interpretations
-          - avoid premature convergence
-          - challenge initial assumptions
-          - increase exploration breadth
-
-        - strategies should emerge from:
-          - operational signals
-          - visual evidence
-          - business goals
-          - user psychology
-          - workflow constraints
-          - trust requirements
-          - browsing behavior
-
-        - think in terms of:
-          - behavioral economics
-          - friction reduction
-          - trust sequencing
-          - intent acceleration
-          - exploratory browsing
-          - cognitive load
-          - decision confidence
-
-        - strategies must contain:
-          - real behavioral hypotheses
-          - meaningful tradeoffs
-          - operational implications
-          - conversion assumptions
+        {{
+        "strategies": [
+            {{
+            "strategy_id": "string",
+            "name": "string",
+            "core_thesis": "string",
+            "target_behavior": "string",
+            "strengths": ["string"],
+            "risks": ["string"],
+            "ideal_for": ["string"],
+            "tradeoffs": ["string"],
+            "confidence": 0.0
+            }}
+        ]
+        }}
         """
     ).strip()
 
@@ -4398,20 +4532,20 @@ def build_design_candidates_prompt(
         Workflow constraints tool:
         {tool_context.get("workflow_constraints", {})}
 
-        Strategy landscape tool:
-        {tool_context.get("strategy_landscape", {})}
+        # Strategy landscape tool:
+        # {tool_context.get("strategy_landscape", {})}
 
-        Memory guidance tool:
-        {tool_context.get("memory_guidance", {})}
+        # Memory guidance tool:
+        # {tool_context.get("memory_guidance", {})}
 
-        Previous critique history:
-        {compact_history(state.critique_history)}
+        # Previous critique history:
+        # {compact_history(state.critique_history)}
 
-        Asset evidence tool:
-        {tool_context.get("asset_evidence", {})}
+        # Asset evidence tool:
+        # {tool_context.get("asset_evidence", {})}
 
-        Process health tool:
-        {tool_context.get("process_health", {})}
+        # # Process health tool:
+        # # {tool_context.get("process_health", {})}
 
         Rulebook:
         {rulebook}
@@ -4424,17 +4558,11 @@ def build_design_candidates_prompt(
         - each candidate must strongly
           embody its assigned strategy
 
-        - candidates must differ
-          substantially in:
-          - information hierarchy
-          - CTA behavior
-          - browsing flow
-          - trust progression
-          - workflow sequencing
-          - content density
-          - educational depth
-          - urgency level
-          - exploration behavior
+        - candidates must differ in:
+        - CTA aggressiveness
+        - browsing flow
+        - trust depth
+        - workflow priority
 
         - section ordering must emerge
           naturally from the strategy itself
@@ -4456,16 +4584,6 @@ def build_design_candidates_prompt(
           not aesthetically justified
 
         - keep copy concise
-        - every section must include:
-          - purpose
-          - short rationale
-
-        - rationale should be brief
-          and tie to:
-          - business goals
-          - workflow behavior
-          - user intent
-          - asset evidence when relevant
 
         - avoid repeating weaknesses
           identified in previous
@@ -4496,6 +4614,70 @@ def build_design_candidates_prompt(
 
         - do not invent unsupported
           workflows or operational systems
+
+          Return STRICT JSON ONLY.
+          Generate exactly 2 candidates.
+
+            Keep outputs concise.
+
+            Rules:
+            - rationale max 12 words
+            - max 2 pages
+            - max 4 sections per page
+            - use concise phrases
+            - no explanations
+            - no purpose fields
+
+            Required schema:
+
+            {{
+            "candidates": [
+                {{
+                "candidate_id": "string",
+                "rationale": "string",
+                "confidence": 0.0,
+
+                "visual_system": {{
+                    "tone": "modern",
+                    "density": "medium",
+                    "media_bias": "balanced",
+                    "trust_emphasis": "medium"
+                }},
+
+                "primary_action": {{
+                    "label": "string",
+                    "kind": "lead",
+                    "placements": ["hero"]
+                }},
+
+                "pages": [
+                    {{
+                    "type": "home",
+                    "sections": [
+                        {{
+                        "type": "hero_offer_banner"
+                        }},
+                        {{
+                        "type": "featured_menu_grid"
+                        }},
+                        {{
+                        "type": "ordering_workflow"
+                        }},
+                        {{
+                        "type": "testimonial_strip"
+                        }},
+                        {{
+                        "type": "location_hours"
+                        }},
+                        {{
+                        "type": "final_conversion_cta"
+                        }}
+                    ]
+                    }}
+                ]
+                }}
+            ]
+            }}
         """
     ).strip()
 
@@ -4523,17 +4705,17 @@ def build_critique_prompt(
         Workflow constraints tool:
         {tool_context.get("workflow_constraints", {})}
 
-        Candidate landscape tool:
-        {tool_context.get("candidate_landscape", {})}
+        # Candidate landscape tool:
+        # {tool_context.get("candidate_landscape", {})}
 
-        Memory guidance tool:
-        {tool_context.get("memory_guidance", {})}
+        # Memory guidance tool:
+        # {tool_context.get("memory_guidance", {})}
 
         Asset evidence tool:
         {tool_context.get("asset_evidence", {})}
 
-        Process health tool:
-        {tool_context.get("process_health", {})}
+        # Process health tool:
+        # {tool_context.get("process_health", {})}
         Vertical rulebook:
         {rulebook}
 
@@ -4547,24 +4729,8 @@ def build_critique_prompt(
         "strong trust"
         "clean design"
 
-        - ALWAYS reference:
-        - specific sections
-        - section ordering
-        - CTA placement
-        - workflow placement
-        - browsing friction
-        - user hesitation
-        - scanning behavior
-        - trust-building strategy
-        - extracted asset evidence
 
         - explain WHY a candidate would outperform the competing candidate under specific business conditions
-
-        - explicitly analyze tradeoffs:
-        - what this strategy improves
-        - what it sacrifices
-        - what type of user behavior it optimizes for
-        - what business risk it introduces
 
         - critique should feel like business strategy analysis, not aesthetic commentary
 
@@ -4580,19 +4746,75 @@ def build_critique_prompt(
 
         - rejection_reason must clearly explain why this candidate lost against the alternative
 
-        - keep critique grounded in:
-        - business goals
-        - workflow friction
-        - user psychology
-        - extracted asset evidence
-        - rulebook priorities
-
         - reference concrete extracted offers, items, prices, visual cues, or business signals whenever possible
-        - when uncertainty is high:
-        - critique assumptions more aggressively
-        - identify hidden business risks
-        - challenge weak strategic assumptions
-        - question workflow prioritization
+
+
+        Return STRICT JSON ONLY.
+
+        Keep all text extremely concise.
+
+        Rules:
+        - every string max 10 words
+        - summary max 20 words
+        - strengths max 3 items
+        - weaknesses max 3 items
+        - revision_instructions max 3 items
+        - tradeoffs max 2 items
+        - predicted_effects max 2 items
+        - concise phrases only
+
+        Allowed criterion values:
+        - conversion
+        - trust
+        - usability
+        - business_fit
+        - completeness
+
+        All scores MUST be integers between 1 and 10.
+
+        - tradeoffs must be structured objects
+        - every tradeoff must include:
+        - advantage
+        - sacrifice
+        - ideal_for
+        - risk
+
+        Rules:
+        - advantage max 8 words
+        - sacrifice max 8 words
+        - ideal_for max 6 words
+        - risk max 8 words
+
+        Required schema:
+
+        {{
+        "critiques": [
+            {{
+            "candidate_id": "string",
+            "summary": "Short comparison summary",
+            "scores": [
+                {{
+                "criterion": "conversion",
+                "score": 8,
+                "reasoning": "Fast CTA path"
+                }}
+            ],
+            "strengths": ["Fast ordering"],
+            "weaknesses": ["Weak storytelling"],
+            "revision_instructions": ["Move CTA higher"],
+            "tradeoffs": [
+            {{
+                "advantage": "Fast ordering flow",
+                "sacrifice": "Less restaurant storytelling",
+                "ideal_for": "High-intent mobile diners",
+                "risk": "Reservation discovery decreases"
+            }}
+            ],
+            "predicted_effects": ["Higher mobile conversions"],
+            "rejection_reason": "Lower trust clarity"
+            }}
+        ]
+        }}
         """
     ).strip()
 
@@ -4684,6 +4906,8 @@ def build_revision_prompt(
         - avoid collapsing all candidates
           into generic middle-ground layouts
 
+        - explicitly analyze tradeoffs using structured tradeoff objects
+
         - explicitly address weaknesses
           identified during previous
           critique iterations
@@ -4754,58 +4978,49 @@ def build_reflection_prompt(
         Strategy landscape tool:
         {tool_context.get("strategy_landscape", {})}
 
-        Candidate landscape tool:
-        {tool_context.get("candidate_landscape", {})}
+        # Candidate landscape tool:
+        # {tool_context.get("candidate_landscape", {})}
 
-        Critique landscape tool:
-        {tool_context.get("critique_landscape", {})}
+        # Critique landscape tool:
+        # {tool_context.get("critique_landscape", {})}
 
         Process health tool:
         {tool_context.get("process_health", {})}
 
-        Candidate history:
-        {compact_history(state.candidate_history)}
+        Candidate ids:
+        {[
+            c.candidate_id
+            for c in state.design_candidates
+        ]}
 
-        Critique history:
-        {compact_history(state.critique_history)}
+        Critique summaries:
+        {[
+            {
+                "candidate": r.candidate_id,
+                "strengths": r.strengths[:1],
+                "weaknesses": r.weaknesses[:1]
+            }
+            for r in state.critique_reports
+        ]}
 
-        Reasoning notes:
-        {compact_reasoning_notes(state)}
+        # Reasoning notes:
+        # {compact_reasoning_notes(state)}
 
         Requirements:
 
-        - evaluate:
-          - exploration depth
-          - strategic diversity
-          - critique quality
-          - reasoning quality
-          - convergence risk
+        - evaluate exploration quality
+        - detect repetitive reasoning
+        - detect weak differentiation
+        - recommend improvements
+        - return concise output
 
-        - detect:
-          - repetitive reasoning
-          - shallow exploration
-          - strategy collapse
-          - generic convergence
-          - weak differentiation
-          - insufficient challenge
+        Rules:
+        - every string max 12 words
+        - concise phrases only
+        - no detailed explanations
 
-        - determine whether the
-          planner explored enough
-          strategic space
-
-        - determine whether
-          candidates became
-          too similar
-
-        - identify whether the
-          critique process became
-          repetitive or weak
-
-        - recommend concrete
-          improvement actions
-
-        - if planning quality is weak:
-          set should_expand_exploration=true
+        If planning quality is weak:
+        set should_expand_exploration=true
         """
     ).strip()
 
@@ -4830,17 +5045,17 @@ def build_debate_prompt(
         Strategy landscape tool:
         {tool_context.get("strategy_landscape", {})}
 
-        Candidate landscape tool:
-        {tool_context.get("candidate_landscape", {})}
+        # Candidate landscape tool:
+        # {tool_context.get("candidate_landscape", {})}
 
-        Critique landscape tool:
-        {tool_context.get("critique_landscape", {})}
+        # Critique landscape tool:
+        # {tool_context.get("critique_landscape", {})}
 
-        Memory guidance tool:
-        {tool_context.get("memory_guidance", {})}
+        # Memory guidance tool:
+        # {tool_context.get("memory_guidance", {})}
 
-        Process health tool:
-        {tool_context.get("process_health", {})}
+        # Process health tool:
+        # {tool_context.get("process_health", {})}
 
         Reflection report:
         {state.reflection_report.model_dump() if state.reflection_report else None}
@@ -4848,39 +5063,27 @@ def build_debate_prompt(
         Requirements:
 
         - compare candidates directly
+        - identify winner and loser
+        - explain key strategic difference
+        - explain losing weakness
+        - recommend one synthesis improvement
+        - return concise output
 
-        - identify:
-          - strategic strengths
-          - strategic weaknesses
-          - behavioral tradeoffs
-          - workflow implications
-          - trust implications
-          - conversion implications
+        Rules:
+        - every string max 12 words
+        - concise phrases only
+        - no detailed explanations
 
-        - determine which candidate
-          better matches:
-          - business goals
-          - user behavior
-          - operational realism
-          - workflow effectiveness
+        Required schema:
 
-        - explain WHY one strategy
-          should dominate
-
-        - identify opportunities
-          to synthesize strengths
-          from the losing strategy
-
-        - avoid generic statements
-
-        - reason explicitly about:
-          - user psychology
-          - friction
-          - trust progression
-          - exploration depth
-          - urgency
-          - scanning behavior
-          - operational usability
+        {{
+        "winner": "string",
+        "loser": "string",
+        "dominance_reason": "string",
+        "loser_failure_reason": "string",
+        "synthesis_recommendation": "string",
+        "decision_confidence": 0.0
+        }}
         """
     ).strip()
 
@@ -4902,66 +5105,52 @@ def build_simulation_prompt(
         Business snapshot tool:
         {tool_context.get("business_snapshot", {})}
 
-        Candidate landscape tool:
-        {tool_context.get("candidate_landscape", {})}
+        # Candidate landscape tool:
+        # {tool_context.get("candidate_landscape", {})}
 
-        Critique landscape tool:
-        {tool_context.get("critique_landscape", {})}
+        # Critique landscape tool:
+        # {tool_context.get("critique_landscape", {})}
 
-        Process health tool:
-        {tool_context.get("process_health", {})}
+        # Process health tool:
+        # {tool_context.get("process_health", {})}
 
         Debate outcome:
         {state.debate_outcome.model_dump() if state.debate_outcome else None}
 
-        Critique history:
-        {compact_history(state.critique_history)}
+        Top critique weaknesses:
+        {[
+            r.weaknesses[:1]
+            for r in state.critique_reports
+        ]}
 
         Requirements:
 
-        - simulate realistic users
-          interacting with the
-          generated experiences
+        - simulate realistic user behavior
+        - identify confusion points
+        - identify trust issues
+        - identify workflow friction
+        - recommend improvements
+        - return concise output
 
-        - simulate:
-          - first-time visitors
-          - hesitant users
-          - high-intent users
-          - mobile users
-          - information-seeking users
+        Rules:
+        - every string max 12 words
+        - max 3 issues
+        - max 3 improvements
+        - concise phrases only
+        - no detailed explanations
 
-        - identify:
-          - friction points
-          - confusion
-          - trust failures
-          - conversion blockers
-          - workflow inefficiencies
-          - unrealistic assumptions
+        Required schema:
 
-        - evaluate:
-          - operational realism
-          - usability realism
-          - behavioral realism
-          - workflow coherence
-
-        - roleplay step-by-step
-          journeys through the site
-
-        - detect:
-          - premature CTAs
-          - excessive cognitive load
-          - missing information
-          - navigation confusion
-          - workflow dead ends
-
-        - provide:
-          - realism scores
-          - systemic issues
-          - recommended improvements
-
-        - reason from actual
-          simulated user behavior,
-          not generic UX principles
+        {{
+        "realism_score": 8,
+        "issues": [
+            "Weak reservation visibility"
+        ],
+        "improvements": [
+            "Move reservation CTA higher"
+        ],
+        "behavior_summary": "Fast ordering flow works well"
+        }}
         """
     ).strip()
 
@@ -5454,6 +5643,104 @@ def normalize_design_spec_payload(payload: dict[str, Any], state: WebsiteAgentSt
             return normalize_design_spec(nested, state)
     return normalize_design_spec(payload, state)
 
+
+def normalize_simulation_report_payload(
+    payload: dict[str, Any],
+    state: WebsiteAgentState | None = None,
+) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        payload = {}
+
+    simulations = (
+        payload.get("simulations")
+        or payload.get("journeys")
+        or payload.get("scenarios")
+        or []
+    )
+
+    normalized_simulations = []
+    recommended_improvements = normalize_string_list(
+        payload.get("recommended_improvements")
+        or payload.get("improvements")
+        or []
+    )
+
+    for index, simulation in enumerate(simulations, start=1):
+        if not isinstance(simulation, dict):
+            continue
+
+        issues = normalize_string_list(
+            simulation.get("issues")
+            or simulation.get("friction_points")
+            or []
+        )
+        trust_issues = normalize_string_list(
+            simulation.get("trust_issues")
+            or simulation.get("trust_observations")
+            or []
+        )
+        workflow_friction = normalize_string_list(
+            simulation.get("workflow_friction")
+            or simulation.get("conversion_barriers")
+            or []
+        )
+        improvements = normalize_string_list(
+            simulation.get("improvements")
+            or simulation.get("recommended_improvements")
+            or []
+        )
+        recommended_improvements = dedupe_strings(
+            recommended_improvements + improvements
+        )[:8]
+
+        normalized_simulations.append(
+            {
+                "persona": simulation.get("persona") or f"persona_{index}",
+                "goal": simulation.get("goal")
+                or simulation.get("behavior")
+                or (state.business_profile.goal if state and state.business_profile else "complete the primary workflow"),
+                "journey_summary": simulation.get("journey_summary")
+                or simulation.get("behavior")
+                or simulation.get("summary")
+                or "Simulated behavior journey.",
+                "friction_points": issues[:5],
+                "trust_observations": trust_issues[:5],
+                "confusion_points": normalize_string_list(
+                    simulation.get("confusion_points") or []
+                )[:5],
+                "conversion_barriers": workflow_friction[:5],
+                "successful": bool(simulation.get("successful", True)),
+                "realism_score": int(
+                    max(
+                        1,
+                        min(
+                            10,
+                            simulation.get(
+                                "realism_score",
+                                payload.get("overall_realism_score", 7),
+                            ),
+                        ),
+                    )
+                ),
+            }
+        )
+
+    overall_realism = payload.get("overall_realism_score")
+    if overall_realism is None:
+        realism_values = [item["realism_score"] for item in normalized_simulations]
+        overall_realism = round(
+            sum(realism_values) / max(len(realism_values), 1)
+        ) if realism_values else 7
+
+    return {
+        "simulations": normalized_simulations,
+        "overall_realism_score": int(max(1, min(10, overall_realism))),
+        "systemic_issues": normalize_string_list(
+            payload.get("systemic_issues") or payload.get("issues") or []
+        )[:8],
+        "recommended_improvements": recommended_improvements[:8],
+    }
+
 def deduplicate_sections(
     sections,
 ):
@@ -5938,8 +6225,8 @@ def normalize_design_spec(value: dict[str, Any], state: WebsiteAgentState | None
 
 def build_fallback_design_spec(state: WebsiteAgentState) -> dict[str, Any]:
     candidate = choose_best_candidate(state)
-    critique = next((item for item in state.critique_reports if item.candidate_id == candidate.candidate_id), None)
-    rationale = [f"Selected {candidate.candidate_id} as the strongest renderable candidate."]
+    critique = next((item for item in state.critique_reports if item.candidate_id == candidate_attr(candidate,"candidate_id","unknown",)), None)
+    rationale = [f"Selected {candidate_attr(candidate,"candidate_id","unknown",)} as the strongest renderable candidate."]
     if critique:
         rationale.extend(critique.strengths[:2])
         rationale.extend(critique.revision_instructions[:2])
@@ -5947,11 +6234,31 @@ def build_fallback_design_spec(state: WebsiteAgentState) -> dict[str, Any]:
         rationale = ["Selected the strongest candidate using rulebook-guided defaults."]
     return {
         "brief": build_fallback_brief(state, candidate, critique),
-        "chosen_candidate_id": candidate.candidate_id,
+        "chosen_candidate_id": candidate_attr(candidate,"candidate_id","unknown",),
         "primary_goal": state.business_profile.goal if state.business_profile else "increase conversions",
-        "visual_system": candidate.visual_system.model_dump(),
+        "visual_system": (
+                            candidate_attr(
+                                candidate,
+                                "visual_system",
+                            ).model_dump()
+                            if candidate_attr(
+                                candidate,
+                                "visual_system",
+                            )
+                            else {}),
         "primary_action": candidate.primary_action.model_dump(),
-        "pages": [page.model_dump() for page in candidate.pages],
+        "pages": [
+                    (
+                        page.model_dump()
+                        if hasattr(page, "model_dump")
+                        else page
+                    )
+                    for page in candidate_attr(
+                        candidate,
+                        "pages",
+                        [],
+                    )
+                ],
         "decision_rationale": dedupe_strings(rationale)[:5],
     }
 
@@ -5971,7 +6278,7 @@ def choose_best_candidate(state: WebsiteAgentState):
             state.design_candidates
         ):
             if (
-                candidate.candidate_id
+                candidate_attr(candidate,"candidate_id","unknown",)
                 == selected_id
             ):
                 return candidate
@@ -5986,7 +6293,7 @@ def choose_best_candidate(state: WebsiteAgentState):
             state.design_candidates
         ):
             if (
-                candidate.candidate_id
+                candidate_attr(candidate,"candidate_id","unknown",)
                 == selected_id
             ):
                 return candidate
@@ -6007,7 +6314,7 @@ def ensure_critiques(state: WebsiteAgentState, critiques: list[Any]) -> list[Any
         critique_ids = {critique.candidate_id for critique in critiques}
         completed = list(critiques)
         for candidate in state.design_candidates:
-            if candidate.candidate_id not in critique_ids:
+            if candidate_attr(candidate,"candidate_id","unknown",)not in critique_ids:
                 completed.append(build_fallback_critique(candidate, state))
         return completed
     return [build_fallback_critique(candidate, state) for candidate in state.design_candidates]
@@ -6029,27 +6336,69 @@ def build_fallback_critique(candidate: Any, state: WebsiteAgentState) -> Any:
         else 6
     )
 
+    visual_system = candidate_attr(
+        candidate,
+        "visual_system",
+    )
+
+    trust_emphasis = getattr(
+        visual_system,
+        "trust_emphasis",
+        "low",
+    )
+
     trust = (
         8
         if mode == "trust_browsing"
-        or candidate.visual_system.trust_emphasis in {"medium", "high"}
+        or trust_emphasis in {"medium", "high"}
         else 5
     )
 
-    usability = 8 if len(candidate.pages) >= 1 else 5
+    usability = (
+        8
+        if len(
+            candidate_attr(
+                candidate,
+                "pages",
+                [],
+            )
+        ) >= 1
+        else 5
+    )
 
-    business_fit = (
+    business_fit = int(round(
         (
             8
             if state.business_profile
             and state.business_profile.vertical.value
-            in candidate.rationale.lower()
+            in candidate_attr(
+                candidate,
+                "rationale",
+                "",
+            ).lower()
             else 7
         )
         - similarity_penalty
+    ))
+
+    pages = candidate_attr(
+        candidate,
+        "pages",
+        [],
     )
 
-    completeness = (8 if candidate.pages else 4) - similarity_penalty
+    completeness = int(round(
+        (
+            8
+            if candidate_attr(
+                candidate,
+                "pages",
+                [],
+            )
+            else 4
+        )
+        - similarity_penalty
+    ))
 
     evidence = summarize_asset_evidence(state.asset_extractions)
 
@@ -6066,11 +6415,11 @@ def build_fallback_critique(candidate: Any, state: WebsiteAgentState) -> Any:
     )
 
     report = {
-        "candidate_id": candidate.candidate_id,
+        "candidate_id": candidate_attr(candidate,"candidate_id","unknown",),
 
         "summary": truncate_text(
             (
-                f"{candidate.candidate_id} is a {mode}-leaning strategy "
+                f"{candidate_attr(candidate,'candidate_id','unknown')} is a {mode}-leaning strategy "
                 f"optimized around a distinct user behavior model. "
                 f"{winner_phrase}"
             ),
@@ -6080,7 +6429,7 @@ def build_fallback_critique(candidate: Any, state: WebsiteAgentState) -> Any:
         "scores": [
             {
                 "criterion": "conversion",
-                "score": conversion,
+                "score": int(round(conversion)),
                 "reasoning": truncate_text(
                     (
                         f"The workflow placement and section ordering support a "
@@ -6094,7 +6443,7 @@ def build_fallback_critique(candidate: Any, state: WebsiteAgentState) -> Any:
 
             {
                 "criterion": "trust",
-                "score": trust,
+                "score": int(round(trust)),
                 "reasoning": truncate_text(
                     (
                         "Trust-building sections and visual emphasis help reduce "
@@ -6107,7 +6456,7 @@ def build_fallback_critique(candidate: Any, state: WebsiteAgentState) -> Any:
 
             {
                 "criterion": "usability",
-                "score": usability,
+                "score": int(round(usability)),
                 "reasoning": truncate_text(
                     (
                         "The page structure remains renderable and reasonably scannable "
@@ -6119,7 +6468,7 @@ def build_fallback_critique(candidate: Any, state: WebsiteAgentState) -> Any:
 
             {
                 "criterion": "business_fit",
-                "score": business_fit,
+                "score": int(round(business_fit)),
                 "reasoning": truncate_text(
                     (
                         "The candidate aligns with the stated business goals, "
@@ -6131,7 +6480,7 @@ def build_fallback_critique(candidate: Any, state: WebsiteAgentState) -> Any:
 
             {
                 "criterion": "completeness",
-                "score": completeness,
+                "score": int(round(completeness)),
                 "reasoning": truncate_text(
                     (
                         "The structure includes enough operational and informational "
@@ -6273,7 +6622,13 @@ def build_fallback_critique(candidate: Any, state: WebsiteAgentState) -> Any:
 
 def build_fallback_brief(state: WebsiteAgentState, candidate: Any, critique: Any | None) -> str:
     goal = state.business_profile.goal if state.business_profile else "increase conversions"
-    page_count = len(candidate.pages)
+    page_count = len(
+        candidate_attr(
+            candidate,
+            "pages",
+            [],
+        )
+    )
     evidence = summarize_asset_evidence(state.asset_extractions)
     evidence_suffix = f" Grounded in extracted evidence: {truncate_text(evidence[0], 90)}." if evidence else ""
     base = f"Design optimized for {goal} with a {page_count}-page structure centered on {candidate.primary_action.label.lower()}.{evidence_suffix}"
@@ -6317,7 +6672,12 @@ def infer_primary_action_kind(state: WebsiteAgentState | None) -> str:
 
 
 def infer_candidate_mode(candidate: Any) -> str:
-    rationale = (candidate.rationale or "").lower()
+    rationale = (
+        getattr(candidate, "rationale", None)
+        or getattr(candidate, "reasoning", None)
+        or getattr(candidate, "summary", None)
+        or ""
+    ).lower()
     if any(token in rationale for token in ("trust", "clarity", "browse", "browsing", "exploration", "confidence")):
         return "trust_browsing"
     return "conversion"
@@ -6342,21 +6702,121 @@ def determine_candidate_mode(candidate: dict[str, Any], index: int = 1) -> str:
     return "conversion"
 
 
-def calculate_similarity_penalty(candidate: Any, candidates: list[Any]) -> int:
-    current_signature = candidate_structure_signature(candidate)
-    for other in candidates:
-        if other.candidate_id == candidate.candidate_id:
+def calculate_similarity_penalty(
+    candidate,
+    others,
+):
+
+    current_id = (
+        getattr(candidate, "candidate_id", None)
+        or getattr(candidate, "id", None)
+        or "unknown_candidate"
+    )
+
+    current_signature = (
+        candidate_structure_signature(candidate)
+    )
+
+    similarities = []
+
+    for other in others:
+
+        other_id = (
+            getattr(other, "candidate_id", None)
+            or getattr(other, "id", None)
+            or "unknown_other"
+        )
+
+        if other_id == current_id:
             continue
-        if candidate_structure_signature(other) == current_signature:
-            return 2
-    return 0
+
+        other_signature = (
+            candidate_structure_signature(other)
+        )
+
+        overlap = len(
+            set(current_signature)
+            & set(other_signature)
+        )
+
+        denominator = max(
+            len(set(current_signature)),
+            1,
+        )
+
+        similarity = overlap / denominator
+
+        similarities.append(similarity)
+
+    if not similarities:
+        return 0.0
+
+    return max(similarities)
+
+def candidate_attr(
+    candidate,
+    attr,
+    default=None,
+):
+
+    value = getattr(
+        candidate,
+        attr,
+        None,
+    )
+
+    if value is not None:
+        return value
+
+    mappings = {
+        "candidate_id": ["id"],
+        "pages": ["recommended_pages"],
+        "rationale": ["reasoning", "summary"],
+        "visual_system": ["design_system"],
+    }
+
+    for alt in mappings.get(attr, []):
+
+        alt_value = getattr(
+            candidate,
+            alt,
+            None,
+        )
+
+        if alt_value is not None:
+            return alt_value
+
+    return default
 
 
-def candidate_structure_signature(candidate: Any) -> tuple[tuple[str, tuple[str, ...]], ...]:
-    signature: list[tuple[str, tuple[str, ...]]] = []
-    for page in candidate.pages:
-        signature.append((page.page_type.value, tuple(section.type.value for section in page.sections)))
-    return tuple(signature)
+def candidate_structure_signature(candidate):
+
+    pages = getattr(candidate, "pages", None)
+
+    if not pages:
+        pages = getattr(candidate, "recommended_pages", None)
+
+    if not pages:
+        pages = []
+
+    normalized = []
+
+    for page in pages:
+
+        if isinstance(page, str):
+            normalized.append(page.lower())
+
+        elif isinstance(page, dict):
+            normalized.append(
+                str(page.get("name", "")).lower()
+            )
+
+        else:
+            normalized.append(
+                str(page).lower()
+            )
+
+    return tuple(sorted(normalized))
 
 
 def default_action_label(kind: str, mode: str = "conversion") -> str:

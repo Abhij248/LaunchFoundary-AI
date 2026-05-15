@@ -2544,7 +2544,15 @@ function attachWebsiteInteractions(spec, designSpec, restaurant) {
       const selectedItem = restaurant.items.find((item) => item.id === itemId);
       if (!selectedItem) return;
       state.cart.unshift(selectedItem);
-      renderWebsiteDynamic(spec, designSpec);
+     function renderPage(page) {
+        return `
+          <section class="generated-page">
+            ${page.sections
+              .map(renderSection)
+              .join("")}
+          </section>
+        `;
+      }
       const orderInput = document.querySelector('#workflowForm input[name="request"]');
       if (orderInput) orderInput.value = selectedItem.name;
     });
@@ -2560,7 +2568,15 @@ function attachWebsiteInteractions(spec, designSpec, restaurant) {
     state.cart = [];
     renderAdmin();
     if (designSpec.primaryAction.kind === "order") {
-      renderWebsiteDynamic(spec, designSpec);
+      function renderPage(page) {
+        return `
+          <section class="generated-page">
+            ${page.sections
+              .map(renderSection)
+              .join("")}
+          </section>
+        `;
+      }
     }
     showPanel("admin");
   });

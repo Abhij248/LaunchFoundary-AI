@@ -5,6 +5,23 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from typing import Optional, Any
+from datetime import datetime
+
+
+class CognitiveEvent(BaseModel):
+    timestamp: str
+    event_type: str
+
+    stage: str
+    title: str
+    summary: str
+
+    confidence: Optional[float] = None
+
+    candidate_id: Optional[str] = None
+
+    metadata: dict[str, Any] = {}
 
 class Vertical(str, Enum):
     RESTAURANT = "restaurant"
@@ -536,6 +553,7 @@ class AgentDecision(
 class WebsiteAgentState(BaseModel):
 
 
+    cognitive_events: list[CognitiveEvent] = Field(default_factory=list)
     cognitive_health: CognitiveHealthReport | None = None
 
     agent_decisions: dict[
