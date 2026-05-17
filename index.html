@@ -23,15 +23,15 @@
           <button class="step" data-target="website">4. Website</button>
           <button class="step" data-target="admin">5. Admin</button>
           <button class="step" data-target="qa">6. QA</button>
-          <!-- <button class="step" data-target="amd">7. AMD Proof</button> -->
+          <button class="step" data-target="amd">7. AMD Proof</button>
         </nav>
-        <!-- <section class="amd-panel">
+        <section class="amd-panel">
           <p class="eyebrow">AMD GPU Role</p>
           <p>
             AMD Developer Cloud powers inference for business understanding, build-spec generation,
             and multimodal intake. The local app demonstrates the product workflow.
           </p>
-        </section> -->
+        </section>
       </aside>
 
       <section class="workspace">
@@ -73,6 +73,43 @@
               Raw business details
               <textarea id="businessDetails">Bella Napoli is a family Italian restaurant in San Francisco. It serves pizza, pasta, desserts, and has a menu for pickup orders. Business hours are 11am to 10pm daily. The owner wants more online orders and table reservations.</textarea>
             </label>
+            <label class="wide">
+              Business Logo
+              <input id="businessLogo" type="file" accept="image/*" />
+              <div id="logoPreview" class="logo-preview"></div>
+            </label>
+            <div class="color-palette-section">
+              <label>Primary Color</label>
+              <input id="primaryColor" type="color" value="#3b82f6" />
+              <label>Secondary Color</label>
+              <input id="secondaryColor" type="color" value="#1e40af" />
+              <label>Accent Color</label>
+              <input id="accentColor" type="color" value="#f59e0b" />
+            </div>
+            <label class="wide">
+              Target Audience
+              <textarea id="targetAudience" placeholder="Describe your ideal customers (age, location, interests, pain points)..."></textarea>
+            </label>
+            <label class="wide">
+              Unique Selling Points
+              <textarea id="uniqueSellingPoints" placeholder="What makes your business different from competitors?"></textarea>
+            </label>
+            <label>
+              Business Hours
+              <input id="businessHours" type="text" placeholder="e.g., Mon-Fri 9am-6pm, Sat 10am-4pm" />
+            </label>
+            <label>
+              Phone Number
+              <input id="phoneNumber" type="tel" placeholder="+1 (555) 123-4567" />
+            </label>
+            <div class="social-media-section">
+              <label>Facebook URL (optional)</label>
+              <input id="facebookUrl" type="url" placeholder="https://facebook.com/yourbusiness" />
+              <label>Instagram URL (optional)</label>
+              <input id="instagramUrl" type="url" placeholder="https://instagram.com/yourbusiness" />
+              <label>Website URL (optional)</label>
+              <input id="existingWebsite" type="url" placeholder="https://yourcurrentsite.com" />
+            </div>
           </div>
           <section class="asset-intake">
             <div>
@@ -169,6 +206,13 @@
               </div>
             </div>
 
+          </div>
+          <div id="researchPanel" class="research-panel" hidden>
+            <div class="research-header">
+              Deep Research Findings
+              <span class="research-tag">Competitor · Local SEO · Menu/Service</span>
+            </div>
+            <div id="researchContent" class="research-content"></div>
           </div>
           <div class="graph-panel">
 
@@ -283,6 +327,14 @@
             <p>A business-ready site with operational workflows.</p>
           </div>
           <div id="sitePreview" class="site-preview"></div>
+          <div id="generatedCodePanel" class="generated-code-panel" hidden>
+            <div class="generated-code-header">
+              <h4>Generated Production Code</h4>
+              <span class="generated-code-tag">Next.js · React · Tailwind</span>
+            </div>
+            <p class="generated-code-meta">Hybrid template + AI-assisted code generation. Inspect the file tree and previews of generated source.</p>
+            <div id="generatedCodeContent"></div>
+          </div>
         </section>
 
         <section id="admin" class="panel">
@@ -312,9 +364,27 @@
             <p>The system validates the business infrastructure before launch.</p>
           </div>
           <div id="qaReport" class="qa-grid"></div>
+
+          <div id="critiquePanel" class="critique-panel" hidden>
+            <div class="critique-header">
+              <h4>Multi-Agent Critique &amp; Debate</h4>
+              <span class="critique-tag">UX · A11y · Conversion · Security · Performance</span>
+            </div>
+            <p class="critique-meta">5 specialist critique agents reviewed the generated code, then a debate orchestrator built consensus.</p>
+            <div id="critiqueContent"></div>
+          </div>
+
+          <div id="deploymentPanel" class="deployment-panel" hidden>
+            <div class="deployment-header">
+              <h4>Deployment &amp; Handover Package</h4>
+              <span class="deployment-tag">DB · Auth · Payments · Deploy</span>
+            </div>
+            <p class="deployment-meta">A complete handover bundle: database schema, auth config, payment integration (if applicable), Docker, and README.</p>
+            <div id="deploymentContent"></div>
+          </div>
         </section>
 
-        <!-- <section id="amd" class="panel">
+        <section id="amd" class="panel">
           <div class="section-title">
             <h3>AMD Inference Proof</h3>
             <p>Paste a BuildSpec generated in AMD Jupyter to drive the same product flow.</p>
@@ -346,7 +416,7 @@
               </div>
             </section>
           </div>
-        </section> -->
+        </section>
       </section>
     </main>
 

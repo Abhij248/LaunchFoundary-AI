@@ -25,6 +25,10 @@ from agentic_models import (
 )
 from agentic_planner import ModelJsonPlanner
 from buildspec_planner import generate_build_spec
+from research_agents import ResearchOrchestrator
+from code_generator import CodeGenerationOrchestrator
+from critique_system import CritiqueOrchestrator
+from deployment_system import DeploymentOrchestrator
 
 
 logging.basicConfig(
@@ -762,6 +766,188 @@ async def generate_buildspec(
         }
     except Exception as e:
         logger.exception(f"Error in generate_buildspec: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@app.post("/run-research")
+async def run_research(
+    request: Request,
+    payload: str | None = Form(default=None),
+) -> dict[str, Any]:
+    """Run deep research agents for competitor analysis, local SEO, and menu/service extraction"""
+    parsed_payload = await extract_request_payload(request, payload)
+    logger.info("Received run_research request")
+    logger.debug(f"Research payload: {parsed_payload}")
+
+    try:
+        profile = parsed_payload.get("business_input", {})
+        if not profile:
+            profile = parsed_payload
+
+        # Initialize planner if not already done
+        global json_planner
+        if json_planner is None:
+            json_planner = ModelJsonPlanner()
+
+        # Initialize research orchestrator
+        orchestrator = ResearchOrchestrator(json_planner)
+
+        # Extract vertical from profile
+        from buildspec_planner import classify_vertical
+        vertical_analysis = classify_vertical(profile.get("details", ""))
+        profile["vertical"] = vertical_analysis["vertical"]
+
+        # Run research agents
+        assets = parsed_payload.get("assets", [])
+        research_results = await orchestrator.run_research(
+            business_profile=profile,
+            assets=assets,
+            run_competitor=True,
+            run_seo=True,
+            run_extraction=len(assets) > 0
+        )
+
+        logger.info("Successfully completed research agents")
+        return {
+            "source": "research_agents",
+            "research_results": {
+                "competitor_analysis": research_results.get("competitor_analysis").model_dump() if research_results.get("competitor_analysis") else {},
+                "local_seo": research_results.get("local_seo").model_dump() if research_results.get("local_seo") else {},
+                "menu_extraction": research_results.get("menu_extraction").model_dump() if research_results.get("menu_extraction") else {},
+            },
+            "vertical": profile.get("vertical", "unknown"),
+        }
+    except Exception as e:
+        logger.exception(f"Error in run_research: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@app.post("/generate-code")
+async def generate_code(
+    request: Request,
+    payload: str | None = Form(default=None),
+) -> dict[str, Any]:
+    """Generate website code from BuildSpec using template + AI-assisted approach"""
+    parsed_payload = await extract_request_payload(request, payload)
+    logger.info("Received generate_code request")
+    logger.debug(f"Code generation payload: {parsed_payload}")
+
+    try:
+        build_spec = parsed_payload.get("buildSpec", {})
+        if not build_spec:
+            raise HTTPException(status_code=400, detail="buildSpec is required")
+
+        # Initialize planner if not already done
+        global json_planner
+        if json_planner is None:
+            json_planner = ModelJsonPlanner()
+
+        # Initialize code generation orchestrator
+        code_orchestrator = CodeGenerationOrchestrator(json_planner)
+
+        # Generate website code
+        generated_code = code_orchestrator.generate_website(build_spec)
+
+        logger.info("Successfully generated website code")
+        return {
+            "source": "template_ai_code_generator",
+            "generated_code": {
+                "pages": generated_code.pages,
+                "components": generated_code.components,
+                "styles": generated_code.styles,
+                "config": generated_code.config,
+                "html_preview": generated_code.html_preview,
+            },
+            "vertical": build_spec.get("business", {}).get("vertical", "unknown"),
+        }
+    except Exception as e:
+        logger.exception(f"Error in generate_code: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@app.post("/run-critique")
+async def run_critique(
+    request: Request,
+    payload: str | None = Form(default=None),
+) -> dict[str, Any]:
+    """Run critique agents on generated code"""
+    parsed_payload = await extract_request_payload(request, payload)
+    logger.info("Received run_critique request")
+    logger.debug(f"Critique payload: {parsed_payload}")
+
+    try:
+        code = parsed_payload.get("code", "")
+        build_spec = parsed_payload.get("buildSpec", {})
+        agents = parsed_payload.get("agents", ["ux", "accessibility", "conversion", "security", "performance"])
+
+        if not code:
+            raise HTTPException(status_code=400, detail="code is required")
+
+        # Initialize planner if not already done
+        global json_planner
+        if json_planner is None:
+            json_planner = ModelJsonPlanner()
+
+        # Initialize critique orchestrator
+        critique_orchestrator = CritiqueOrchestrator(json_planner)
+
+        # Run critique agents
+        critique_reports = await critique_orchestrator.run_critique(code, build_spec, agents)
+
+        # Run debate/consensus
+        debate_outcome = await critique_orchestrator.run_debate(critique_reports, build_spec)
+
+        logger.info("Successfully completed critique and debate")
+        return {
+            "source": "critique_debate_system",
+            "critique_reports": {
+                agent_name: report.model_dump() if hasattr(report, "model_dump") else report
+                for agent_name, report in critique_reports.items()
+            },
+            "debate_outcome": debate_outcome.model_dump() if hasattr(debate_outcome, "model_dump") else debate_outcome,
+        }
+    except Exception as e:
+        logger.exception(f"Error in run_critique: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@app.post("/generate-deployment")
+async def generate_deployment(
+    request: Request,
+    payload: str | None = Form(default=None),
+) -> dict[str, Any]:
+    """Generate deployment package from BuildSpec"""
+    parsed_payload = await extract_request_payload(request, payload)
+    logger.info("Received generate_deployment request")
+    logger.debug(f"Deployment payload: {parsed_payload}")
+
+    try:
+        build_spec = parsed_payload.get("buildSpec", {})
+        if not build_spec:
+            raise HTTPException(status_code=400, detail="buildSpec is required")
+
+        # Initialize deployment orchestrator
+        deployment_orchestrator = DeploymentOrchestrator()
+
+        # Generate deployment package
+        deployment_package = deployment_orchestrator.generate_deployment_package(build_spec)
+
+        logger.info("Successfully generated deployment package")
+        return {
+            "source": "deployment_system",
+            "deployment_package": {
+                "database_schema": deployment_package.database_schema.model_dump(),
+                "auth_config": deployment_package.auth_config.model_dump(),
+                "payment_config": deployment_package.payment_config.model_dump() if deployment_package.payment_config else None,
+                "deployment_config": deployment_package.deployment_config.model_dump(),
+                "readme": deployment_package.readme,
+                "docker_compose": deployment_package.docker_compose,
+                "env_file": deployment_package.env_file,
+            },
+            "vertical": build_spec.get("business", {}).get("vertical", "unknown"),
+        }
+    except Exception as e:
+        logger.exception(f"Error in generate_deployment: {e}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 

@@ -64,26 +64,31 @@ class StrategyHypothesisSet(BaseModel):
 
 class ReflectionReport(BaseModel):
     exploration_quality: int = Field(
+        default=7,
         ge=1,
         le=10,
     )
 
     strategic_diversity: int = Field(
+        default=5,
         ge=1,
         le=10,
     )
 
     critique_depth: int = Field(
+        default=5,
         ge=1,
         le=10,
     )
 
     reasoning_quality: int = Field(
+        default=6,
         ge=1,
         le=10,
     )
 
     convergence_risk: int = Field(
+        default=5,
         ge=1,
         le=10,
     )

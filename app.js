@@ -12,6 +12,13 @@ const presets = {
     email: "hello@bellanapoli.example",
     details:
       "Bella Napoli is a family Italian restaurant in San Francisco. It serves pizza, pasta, desserts, and has a menu for pickup orders. Business hours are 11am to 10pm daily. The owner wants more online orders and table reservations.",
+    target_audience: "Families and young professionals in San Francisco looking for authentic Italian dining",
+    unique_selling_points: "Family recipes passed down 3 generations, wood-fired pizza, gluten-free options",
+    business_hours: "11am-10pm daily",
+    phone_number: "+1 (415) 555-0123",
+    primary_color: "#dc2626",
+    secondary_color: "#1e3a8a",
+    accent_color: "#f59e0b",
   },
   clinic: {
     name: "BrightCare Dental",
@@ -20,6 +27,13 @@ const presets = {
     email: "appointments@brightcare.example",
     details:
       "BrightCare Dental is a dental clinic in Austin. It offers cleaning, whitening, emergency dental care, implants, and family dentistry. Business hours are Monday to Friday 9am to 6pm. Patients should be able to book appointments online and submit intake information.",
+    target_audience: "Families and professionals in Austin seeking comprehensive dental care",
+    unique_selling_points: "Same-day emergency appointments, modern technology, gentle care approach",
+    business_hours: "Mon-Fri 9am-6pm",
+    phone_number: "+1 (512) 555-0456",
+    primary_color: "#0891b2",
+    secondary_color: "#0e7490",
+    accent_color: "#14b8a6",
   },
   service: {
     name: "Northstar Home Repair",
@@ -28,6 +42,13 @@ const presets = {
     email: "jobs@northstar.example",
     details:
       "Northstar Home Repair is a local repair service in Denver. It handles plumbing, electrical fixes, HVAC tuneups, and emergency repair requests. Customers need fast quotes, service area information, and a reliable contact workflow.",
+    target_audience: "Homeowners in Denver metro area needing reliable home maintenance",
+    unique_selling_points: "24/7 emergency service, licensed and insured technicians, upfront pricing",
+    business_hours: "24/7 emergency, Mon-Sat 8am-6pm for routine",
+    phone_number: "+1 (303) 555-0789",
+    primary_color: "#f97316",
+    secondary_color: "#ea580c",
+    accent_color: "#fbbf24",
   },
 };
 
@@ -154,7 +175,30 @@ function getBusinessProfileInput() {
     goal: document.querySelector("#businessGoal").value,
     contact_email: document.querySelector("#businessEmail").value.trim(),
     details: document.querySelector("#businessDetails").value,
+    logo: document.querySelector("#businessLogo").files[0] || null,
+    primary_color: document.querySelector("#primaryColor").value,
+    secondary_color: document.querySelector("#secondaryColor").value,
+    accent_color: document.querySelector("#accentColor").value,
+    target_audience: document.querySelector("#targetAudience").value.trim(),
+    unique_selling_points: document.querySelector("#uniqueSellingPoints").value.trim(),
+    business_hours: document.querySelector("#businessHours").value.trim(),
+    phone_number: document.querySelector("#phoneNumber").value.trim(),
+    facebook_url: document.querySelector("#facebookUrl").value.trim(),
+    instagram_url: document.querySelector("#instagramUrl").value.trim(),
+    existing_website: document.querySelector("#existingWebsite").value.trim(),
   };
+}
+
+function handleLogoUpload(event) {
+  const file = event.target.files[0];
+  if (file) {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const preview = document.querySelector("#logoPreview");
+      preview.innerHTML = `<img src="${e.target.result}" alt="Logo preview" />`;
+    };
+    reader.readAsDataURL(file);
+  }
 }
 
 function pushTimelineEvent(agent, message, badge = "active") {
@@ -208,13 +252,16 @@ async function replayGraphEvents(events) {
     );
 
     switch (nodeName) {
-      case "business_profile":
+      case "business_profile": {
+        const profile =
+          payload?.business_profile || payload || {};
         pushTimelineEvent(
           "Business Understanding Agent",
-          `Detected ${payload?.vertical || "unknown"} business with ${Math.round((payload?.confidence || 0.7) * 100)}% confidence.`,
+          `Detected ${profile?.vertical || "unknown"} business with ${Math.round((profile?.confidence ?? 0.7) * 100)}% confidence.`,
           "classified",
         );
         break;
+      }
 
       case "requirements": {
 
@@ -246,9 +293,9 @@ async function replayGraphEvents(events) {
       case "strategy_hypotheses": {
 
         const strategies =
+          payload?.strategy_hypotheses ||
           payload?.strategies ||
-          payload ||
-          [];
+          (Array.isArray(payload) ? payload : []);
 
         pushTimelineEvent(
           "Strategy Agent",
@@ -262,9 +309,9 @@ async function replayGraphEvents(events) {
       case "design_candidates": {
 
         const candidates =
+          payload?.design_candidates ||
           payload?.candidates ||
-          payload ||
-          [];
+          (Array.isArray(payload) ? payload : []);
 
         pushTimelineEvent(
           "Design Agent",
@@ -297,18 +344,26 @@ async function replayGraphEvents(events) {
         );
         break;
 
-      case "debate":
+      case "debate": {
+        const debate =
+          payload?.debate_outcome || payload || {};
         pushTimelineEvent(
           "Debate Agent",
-          payload?.winner_reasoning || "Debated competing strategies.",
+          debate?.winner_reasoning || "Debated competing strategies.",
           "debating",
         );
         break;
+      }
 
-      case "simulation":
+      case "simulation": {
+        const sim =
+          payload?.simulation_report || payload || {};
+        const realism =
+          sim?.overall_realism_score ??
+          sim?.realism_score;
         pushTimelineEvent(
           "Simulation Agent",
-          `Behavioural simulation realism score: ${payload?.overall_realism_score || "--"}/10`,
+          `Behavioural simulation realism score: ${realism ?? "--"}/10`,
           "simulated",
         );
         pushEvolutionUpdate(
@@ -318,6 +373,7 @@ async function replayGraphEvents(events) {
           "Simulation agent detected confusion among first-time visitors.",
         );
         break;
+      }
 
       case "revise":
         pushTimelineEvent(
@@ -367,22 +423,24 @@ function updateCognitionPanel(
       Number(uncertainty).toFixed(2);
   }
 
-  if (
-    payload?.exploration_quality
-  ) {
+  const explorationQuality =
+    payload?.exploration_quality ??
+    payload?.reflection_report?.exploration_quality;
+  if (explorationQuality !== undefined) {
     document.querySelector(
       "#explorationValue",
     ).textContent =
-      `${payload.exploration_quality}/10`;
+      `${explorationQuality}/10`;
   }
 
-  if (
-    payload?.convergence_risk
-  ) {
+  const convergenceRisk =
+    payload?.convergence_risk ??
+    payload?.reflection_report?.convergence_risk;
+  if (convergenceRisk !== undefined) {
     document.querySelector(
       "#convergenceValue",
     ).textContent =
-      `${payload.convergence_risk}/10`;
+      `${convergenceRisk}/10`;
   }
 
   let reasoningLines = [];
@@ -1152,6 +1210,8 @@ async function runDemo() {
       "#timeline",
     ).innerHTML = "";
 
+    clearPipelinePanels();
+
     document.querySelector(
       "#evolutionFeed",
     ).innerHTML = `<div class="evolution-empty">Awaiting strategic revisions...</div>`;
@@ -1263,6 +1323,11 @@ async function runDemo() {
     showPanel(
       "reasoning",
     );
+
+    // Autonomously continue the pipeline: research -> code -> critique -> deployment.
+    runProductionPipeline().catch((error) => {
+      console.error("Production pipeline failed", error);
+    });
   } catch (error) {
     console.error(
       "Graph execution failed",
@@ -1335,10 +1400,19 @@ document.querySelectorAll("[data-preset]").forEach((button) => {
     document.querySelector("#businessGoal").value = preset.goal;
     document.querySelector("#businessEmail").value = preset.email;
     document.querySelector("#businessDetails").value = preset.details;
+    document.querySelector("#targetAudience").value = preset.target_audience || "";
+    document.querySelector("#uniqueSellingPoints").value = preset.unique_selling_points || "";
+    document.querySelector("#businessHours").value = preset.business_hours || "";
+    document.querySelector("#phoneNumber").value = preset.phone_number || "";
+    document.querySelector("#primaryColor").value = preset.primary_color || "#3b82f6";
+    document.querySelector("#secondaryColor").value = preset.secondary_color || "#1e40af";
+    document.querySelector("#accentColor").value = preset.accent_color || "#f59e0b";
   });
 });
 
 document.querySelector("#runDemo").addEventListener("click", runDemo);
+
+document.querySelector("#businessLogo").addEventListener("change", handleLogoUpload);
 
 document.querySelector("#businessAssets").addEventListener("change", async (event) => {
   const files = [...(event.currentTarget.files || [])];
@@ -2544,15 +2618,7 @@ function attachWebsiteInteractions(spec, designSpec, restaurant) {
       const selectedItem = restaurant.items.find((item) => item.id === itemId);
       if (!selectedItem) return;
       state.cart.unshift(selectedItem);
-     function renderPage(page) {
-        return `
-          <section class="generated-page">
-            ${page.sections
-              .map(renderSection)
-              .join("")}
-          </section>
-        `;
-      }
+      renderWebsiteDynamic(spec, designSpec);
       const orderInput = document.querySelector('#workflowForm input[name="request"]');
       if (orderInput) orderInput.value = selectedItem.name;
     });
@@ -2568,15 +2634,7 @@ function attachWebsiteInteractions(spec, designSpec, restaurant) {
     state.cart = [];
     renderAdmin();
     if (designSpec.primaryAction.kind === "order") {
-      function renderPage(page) {
-        return `
-          <section class="generated-page">
-            ${page.sections
-              .map(renderSection)
-              .join("")}
-          </section>
-        `;
-      }
+      renderWebsiteDynamic(spec, designSpec);
     }
     showPanel("admin");
   });
@@ -2879,4 +2937,344 @@ function renderMenuCard(item) {
       </div>
     </article>
   `;
+}
+
+/* =========================
+   Autonomous Pipeline Orchestrator
+========================= */
+
+state.pipeline = {
+  research: null,
+  generatedCode: null,
+  critique: null,
+  deployment: null,
+};
+
+async function postJSON(url, body) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const raw = await response.text();
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    parsed = { raw };
+  }
+  if (!response.ok) {
+    const message = parsed?.detail || raw || `HTTP ${response.status}`;
+    throw new Error(message);
+  }
+  return parsed;
+}
+
+function scorePillClass(score) {
+  if (typeof score !== "number") return "";
+  if (score < 50) return "is-low";
+  if (score < 75) return "is-mid";
+  return "";
+}
+
+function escapeHtml(value) {
+  if (value == null) return "";
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function renderList(items, fallback = "No items reported.") {
+  if (!Array.isArray(items) || items.length === 0) {
+    return `<p class="empty">${fallback}</p>`;
+  }
+  return `<ul>${items
+    .slice(0, 8)
+    .map((item) => `<li>${escapeHtml(typeof item === "string" ? item : JSON.stringify(item))}</li>`)
+    .join("")}</ul>`;
+}
+
+function renderResearch(result) {
+  const panel = document.querySelector("#researchPanel");
+  const content = document.querySelector("#researchContent");
+  if (!panel || !content) return;
+  if (!result) {
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = false;
+
+  const data = result.research_results || result;
+  const cards = [];
+  const competitor = data.competitor_analysis;
+  if (competitor) {
+    const compList = (competitor.likely_competitors || competitor.competitors || []).map(
+      (c) => (typeof c === "string" ? c : c.name || JSON.stringify(c)),
+    );
+    cards.push(`
+      <div class="research-card">
+        <h5>Competitor Analysis</h5>
+        ${renderList(compList, "No likely competitors surfaced.")}
+        ${competitor.differentiation_opportunities ? `<p><strong>Differentiation:</strong> ${escapeHtml(
+          Array.isArray(competitor.differentiation_opportunities)
+            ? competitor.differentiation_opportunities.join("; ")
+            : competitor.differentiation_opportunities,
+        )}</p>` : ""}
+      </div>
+    `);
+  }
+
+  const seo = data.local_seo;
+  if (seo) {
+    const keywords = seo.target_keywords || seo.high_value_keywords || seo.keywords || seo.local_search_terms || [];
+    cards.push(`
+      <div class="research-card">
+        <h5>Local SEO Strategy</h5>
+        ${renderList(keywords, "No keyword recommendations.")}
+        ${seo.review_strategy ? `<p><strong>Reviews:</strong> ${escapeHtml(seo.review_strategy)}</p>` : ""}
+      </div>
+    `);
+  }
+
+  const menu = data.menu_extraction;
+  if (menu && typeof menu === "object" && Object.keys(menu).length > 0) {
+    const items = menu.items || menu.services || [];
+    const itemNames = items.map((i) => (typeof i === "string" ? i : i.name || JSON.stringify(i)));
+    cards.push(`
+      <div class="research-card">
+        <h5>Menu / Service Extraction</h5>
+        ${renderList(itemNames, "No items extracted from uploaded assets.")}
+      </div>
+    `);
+  }
+
+  content.innerHTML = cards.length
+    ? cards.join("")
+    : `<p class="empty">Research returned no usable findings.</p>`;
+}
+
+function renderGeneratedCode(result) {
+  const panel = document.querySelector("#generatedCodePanel");
+  const content = document.querySelector("#generatedCodeContent");
+  if (!panel || !content) return;
+  if (!result) {
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = false;
+
+  const generated = result.generated_code || result;
+  const pages = generated?.pages || {};
+  const files = generated?.files || {};
+  const components = generated?.components || {};
+
+  const entries = [
+    ...Object.entries(pages).map(([k, v]) => [`pages/${k}`, v]),
+    ...Object.entries(components).map(([k, v]) => [`components/${k}`, v]),
+    ...Object.entries(files).map(([k, v]) => [k, v]),
+  ];
+
+  const previewHtml = generated?.html_preview || "";
+  const previewBlock = previewHtml
+    ? `<div class="website-preview-wrap">
+        <h5 style="margin-bottom:.5rem;font-weight:600;">Live Preview</h5>
+        <iframe srcdoc="" id="sitePreviewFrame"
+          style="width:100%;height:520px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;"></iframe>
+      </div>`
+    : "";
+
+  if (entries.length === 0 && !previewHtml) {
+    content.innerHTML = `<p class="empty">No source files generated.</p>`;
+    return;
+  }
+
+  content.innerHTML = previewBlock + entries
+    .slice(0, 6)
+    .map(([name, source]) => `
+      <div class="code-file-card">
+        <h5>${escapeHtml(name)}<span class="score-pill">${(String(source).length / 1000).toFixed(1)} KB</span></h5>
+        <pre>${escapeHtml(String(source).slice(0, 1800))}${String(source).length > 1800 ? "\n... (truncated)" : ""}</pre>
+      </div>
+    `)
+    .join("");
+
+  if (previewHtml) {
+    const frame = content.querySelector("#sitePreviewFrame");
+    if (frame) frame.srcdoc = previewHtml;
+  }
+}
+
+function renderCritique(result) {
+  const panel = document.querySelector("#critiquePanel");
+  const content = document.querySelector("#critiqueContent");
+  if (!panel || !content) return;
+  if (!result) {
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = false;
+
+  const reports = result.critique_reports || result.reports || {};
+  const debate = result.debate_outcome || result.debate || {};
+
+  const agentCards = Object.entries(reports)
+    .map(([agent, report]) => {
+      const score = typeof report?.score === "number" ? report.score : null;
+      const scoreHtml = score != null
+        ? `<span class="score-pill ${scorePillClass(score)}">${score}/100</span>`
+        : "";
+      const issues = report?.issues || [];
+      const suggestions = report?.suggestions || [];
+      return `
+        <div class="critique-agent-card">
+          <h5>${escapeHtml(agent.toUpperCase())} Critique${scoreHtml}</h5>
+          <p><strong>Issues</strong></p>
+          ${renderList(issues, "No issues identified.")}
+          <p style="margin-top:8px"><strong>Suggestions</strong></p>
+          ${renderList(suggestions, "No suggestions returned.")}
+        </div>
+      `;
+    })
+    .join("");
+
+  const consensusHtml = debate && (debate.consensus || debate.winner_reasoning || debate.summary)
+    ? `<div class="debate-consensus">
+        <strong>Debate Consensus</strong>
+        ${escapeHtml(debate.consensus || debate.winner_reasoning || debate.summary)}
+      </div>`
+    : "";
+
+  content.innerHTML = consensusHtml + agentCards ||
+    `<p class="empty">Critique returned no reports.</p>`;
+}
+
+function renderDeployment(result) {
+  const panel = document.querySelector("#deploymentPanel");
+  const content = document.querySelector("#deploymentContent");
+  if (!panel || !content) return;
+  if (!result) {
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = false;
+
+  const pkg = result.deployment_package || result;
+  const cards = [];
+
+  if (pkg.database_schema) {
+    const tables = pkg.database_schema.tables || [];
+    cards.push(`
+      <div class="deployment-card">
+        <h5>Database Schema<span class="score-pill">${tables.length} tables</span></h5>
+        <p>${escapeHtml(tables.map((t) => t.name || t).join(", ") || "Schema generated.")}</p>
+      </div>
+    `);
+  }
+
+  if (pkg.auth_config) {
+    cards.push(`
+      <div class="deployment-card">
+        <h5>Auth Configuration<span class="score-pill">${escapeHtml(pkg.auth_config.provider || "configured")}</span></h5>
+        <p>${escapeHtml(pkg.auth_config.summary || "Authentication endpoints and middleware generated.")}</p>
+      </div>
+    `);
+  }
+
+  if (pkg.payment_config) {
+    cards.push(`
+      <div class="deployment-card">
+        <h5>Payment Integration<span class="score-pill">${escapeHtml(pkg.payment_config.provider || "Stripe")}</span></h5>
+        <p>${escapeHtml(pkg.payment_config.summary || "Payment intents and webhooks configured.")}</p>
+      </div>
+    `);
+  }
+
+  if (pkg.deployment_config) {
+    cards.push(`
+      <div class="deployment-card">
+        <h5>Deployment Targets</h5>
+        <p>${escapeHtml(
+          (pkg.deployment_config.targets || pkg.deployment_config.platforms || ["Docker", "Vercel"]).join(", "),
+        )}</p>
+      </div>
+    `);
+  }
+
+  content.innerHTML = cards.length
+    ? cards.join("")
+    : `<p class="empty">No deployment artifacts generated.</p>`;
+}
+
+function clearPipelinePanels() {
+  state.pipeline = { research: null, generatedCode: null, critique: null, deployment: null };
+  ["#researchPanel", "#generatedCodePanel", "#critiquePanel", "#deploymentPanel"].forEach((sel) => {
+    const el = document.querySelector(sel);
+    if (el) el.hidden = true;
+  });
+}
+
+async function runProductionPipeline() {
+  if (!state.spec) return;
+  const profile = getBusinessProfileInput();
+  if (profile && "logo" in profile) delete profile.logo;
+
+  // 1. Deep Research
+  pushTimelineEvent("Research Agent", "Running competitor, local SEO, and asset extraction agents...", "active");
+  try {
+    const research = await postJSON("/run-research", {
+      business_input: { ...profile, vertical: state.spec?.business?.vertical },
+      assets: state.assetExtractions || [],
+    });
+    state.pipeline.research = research;
+    renderResearch(research);
+    pushTimelineEvent("Research Agent", "Deep research findings published.", "researched");
+  } catch (error) {
+    pushTimelineEvent("Research Agent", `Research failed: ${error.message}`, "warning");
+  }
+
+  // 2. Code Generation
+  pushTimelineEvent("Code Generation Agent", "Generating Next.js + Tailwind source from BuildSpec...", "active");
+  try {
+    const code = await postJSON("/generate-code", { buildSpec: state.spec });
+    state.pipeline.generatedCode = code;
+    renderGeneratedCode(code);
+    pushTimelineEvent("Code Generation Agent", "Production code generated.", "planned");
+  } catch (error) {
+    pushTimelineEvent("Code Generation Agent", `Code generation failed: ${error.message}`, "warning");
+  }
+
+  // 3. Critique & Debate
+  const generatedSource =
+    state.pipeline?.generatedCode?.generated_code?.pages?.index ||
+    state.pipeline?.generatedCode?.pages?.index ||
+    "";
+  if (generatedSource) {
+    pushTimelineEvent("Critique Council", "5 specialist agents reviewing generated code...", "active");
+    try {
+      const critique = await postJSON("/run-critique", {
+        code: generatedSource,
+        buildSpec: state.spec,
+        agents: ["ux", "accessibility", "conversion", "security", "performance"],
+      });
+      state.pipeline.critique = critique;
+      renderCritique(critique);
+      pushTimelineEvent("Critique Council", "Multi-agent critique and debate complete.", "evaluated");
+    } catch (error) {
+      pushTimelineEvent("Critique Council", `Critique failed: ${error.message}`, "warning");
+    }
+  }
+
+  // 4. Deployment Package
+  pushTimelineEvent("Deployment Agent", "Generating database, auth, payment, and deployment artifacts...", "active");
+  try {
+    const deployment = await postJSON("/generate-deployment", { buildSpec: state.spec });
+    state.pipeline.deployment = deployment;
+    renderDeployment(deployment);
+    pushTimelineEvent("Deployment Agent", "Deployment package ready for handover.", "complete");
+  } catch (error) {
+    pushTimelineEvent("Deployment Agent", `Deployment generation failed: ${error.message}`, "warning");
+  }
 }
