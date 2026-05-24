@@ -598,6 +598,7 @@ class WebsiteAgentState(BaseModel):
     memory_query: MemoryQuery | None = None
     retrieved_memories: list[RetrievedMemory] = Field(default_factory=list)
     tool_invocations: list["ToolInvocationRecord"] = Field(default_factory=list)
+    tool_cache: dict[str, Any] = Field(default_factory=dict)
 
 class BehavioralArchetypeWeight(
     BaseModel

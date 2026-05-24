@@ -222,7 +222,7 @@ async function replayGraphEvents(events) {
   if (!events.length) {
     pushTimelineEvent(
       "System",
-      "Planner graph is unavailable, so the app is using deterministic fallback mode with uploaded asset extraction where available.",
+      "Running in fallback mode. Uploaded assets are sent to Pollinations for vision extraction.",
       "active",
     );
     updateCognitionPanel("fallback_mode", {
@@ -237,166 +237,176 @@ async function replayGraphEvents(events) {
   }
 
   for (const event of events) {
-    const nodeName = Object.keys(event)[0];
-    const payload = event[nodeName];
+    renderGraphEvent(event);
 
-    if (!nodeName) continue;
+    await sleep(800);
+  }
+}
 
-    updateCognitionPanel(
-      nodeName,
-      payload,
-    );
+function renderGraphEvent(event) {
+  const nodeName = Object.keys(event)[0];
+  const payload = event[nodeName];
 
-    updateGraphExecution(
-      nodeName,
-    );
+  if (!nodeName) return;
 
-    switch (nodeName) {
-      case "business_profile": {
-        const profile =
-          payload?.business_profile || payload || {};
-        pushTimelineEvent(
-          "Business Understanding Agent",
-          `Detected ${profile?.vertical || "unknown"} business with ${Math.round((profile?.confidence ?? 0.7) * 100)}% confidence.`,
-          "classified",
-        );
-        break;
-      }
+  updateCognitionPanel(
+    nodeName,
+    payload,
+  );
 
-      case "requirements": {
+  updateGraphExecution(
+    nodeName,
+  );
 
-        const requirements =
-          payload?.requirements_spec ||
-          payload;
+  switch (nodeName) {
+    case "business_profile": {
+      const profile =
+        payload?.business_profile || payload || {};
+      pushTimelineEvent(
+        "Business Understanding Agent",
+        `Detected ${profile?.vertical || "unknown"} business with ${Math.round((profile?.confidence ?? 0.7) * 100)}% confidence.`,
+        "classified",
+      );
+      break;
+    }
 
-        const pageCount =
-          (
-            requirements?.required_pages ||
-            []
-          ).length;
+    case "memory_retrieval":
+      pushTimelineEvent(
+        "Memory Agent",
+        "Retrieved reusable planning memory for the current business context.",
+        "active",
+      );
+      break;
 
-        const workflowCount =
-          (
-            requirements?.required_workflows ||
-            []
-          ).length;
+    case "requirements": {
+      const requirements =
+        payload?.requirements_spec ||
+        payload;
 
-        pushTimelineEvent(
-          "Requirements Agent",
-          `Planned ${pageCount} pages and ${workflowCount} workflows.`,
-          "researched",
-        );
+      const pageCount =
+        (
+          requirements?.required_pages ||
+          []
+        ).length;
 
-        break;
-      }
+      const workflowCount =
+        (
+          requirements?.required_workflows ||
+          []
+        ).length;
 
-      case "strategy_hypotheses": {
+      pushTimelineEvent(
+        "Requirements Agent",
+        `Planned ${pageCount} pages and ${workflowCount} workflows.`,
+        "researched",
+      );
 
-        const strategies =
-          payload?.strategy_hypotheses ||
-          payload?.strategies ||
-          (Array.isArray(payload) ? payload : []);
+      break;
+    }
 
-        pushTimelineEvent(
-          "Strategy Agent",
-          `Generated ${strategies.length} competing behavioural strategies.`,
-          "thinking",
-        );
+    case "strategy_hypotheses": {
+      const strategies =
+        payload?.strategy_hypotheses ||
+        payload?.strategies ||
+        (Array.isArray(payload) ? payload : []);
 
-        break;
-      }
+      pushTimelineEvent(
+        "Strategy Agent",
+        `Generated ${strategies.length} competing behavioural strategies.`,
+        "thinking",
+      );
 
-      case "design_candidates": {
+      break;
+    }
 
-        const candidates =
-          payload?.design_candidates ||
-          payload?.candidates ||
-          (Array.isArray(payload) ? payload : []);
+    case "design_candidates": {
+      const candidates =
+        payload?.design_candidates ||
+        payload?.candidates ||
+        (Array.isArray(payload) ? payload : []);
 
-        pushTimelineEvent(
-          "Design Agent",
-          `Created ${candidates.length} adaptive design candidates.`,
-          "planned",
-        );
+      pushTimelineEvent(
+        "Design Agent",
+        `Created ${candidates.length} adaptive design candidates.`,
+        "planned",
+      );
 
-        break;
-      }
+      break;
+    }
 
-      case "critique":
-        pushTimelineEvent(
-          "Critique Agent",
-          "Evaluated strategic tradeoffs and workflow weaknesses.",
-          "evaluated",
-        );
+    case "critique":
+      pushTimelineEvent(
+        "Critique Agent",
+        "Evaluated strategic tradeoffs and workflow weaknesses.",
+        "evaluated",
+      );
+      if (!state._evolutionCritiquePushed) {
+        state._evolutionCritiquePushed = true;
         pushEvolutionUpdate(
           "CTA Strategy Revision",
           "Aggressive immediate conversion CTA",
           "Trust-first onboarding flow",
           "Critique and simulation agents detected hesitation before trust establishment.",
         );
-        break;
-
-      case "reflection":
-        pushTimelineEvent(
-          "Reflection Agent",
-          "Reflection completed. Evaluating exploration quality.",
-          "reflecting",
-        );
-        break;
-
-      case "debate": {
-        const debate =
-          payload?.debate_outcome || payload || {};
-        pushTimelineEvent(
-          "Debate Agent",
-          debate?.winner_reasoning || "Debated competing strategies.",
-          "debating",
-        );
-        break;
       }
+      break;
 
-      case "simulation": {
-        const sim =
-          payload?.simulation_report || payload || {};
-        const realism =
-          sim?.overall_realism_score ??
-          sim?.realism_score;
-        pushTimelineEvent(
-          "Simulation Agent",
-          `Behavioural simulation realism score: ${realism ?? "--"}/10`,
-          "simulated",
-        );
+    case "reflection":
+      pushTimelineEvent(
+        "Reflection Agent",
+        "Reflection completed. Evaluating exploration quality.",
+        "reflecting",
+      );
+      break;
+
+    case "debate": {
+      const debate =
+        payload?.debate_outcome || payload || {};
+      pushTimelineEvent(
+        "Debate Agent",
+        debate?.winner_reasoning || "Debated competing strategies.",
+        "debating",
+      );
+      break;
+    }
+
+    case "simulation": {
+      const sim =
+        payload?.simulation_report || payload || {};
+      const realism =
+        sim?.overall_realism_score ??
+        sim?.realism_score;
+      pushTimelineEvent(
+        "Simulation Agent",
+        `Behavioural simulation realism score: ${realism ?? "--"}/10`,
+        "simulated",
+      );
+      if (!state._evolutionSimPushed) {
+        state._evolutionSimPushed = true;
         pushEvolutionUpdate(
           "Workflow Optimization",
           "Users encountered friction during booking",
           "Progressive trust-building before booking interaction",
           "Simulation agent detected confusion among first-time visitors.",
         );
-        break;
       }
-
-      case "revise":
-        pushTimelineEvent(
-          "Synthesis Agent",
-          "Final adaptive website system synthesised.",
-          "complete",
-        );
-        break;
-
-      default:
-        pushTimelineEvent(
-          "Graph Agent",
-          `Executed node: ${nodeName}`,
-          "active",
-        );
+      break;
     }
 
-    updateCognitionPanel(
-      nodeName,
-      payload,
-    );
+    case "revise":
+      pushTimelineEvent(
+        "Synthesis Agent",
+        "Final adaptive website system synthesised.",
+        "complete",
+      );
+      break;
 
-    await sleep(800);
+    default:
+      pushTimelineEvent(
+        "Graph Agent",
+        `Executed node: ${nodeName}`,
+        "active",
+      );
   }
 }
 
@@ -552,6 +562,7 @@ function updateGraphExecution(
 ) {
   const orderedNodes = [
     "business_profile",
+    "memory_retrieval",
     "requirements",
     "strategy_hypotheses",
     "design_candidates",
@@ -1113,6 +1124,22 @@ function renderAdmin() {
   renderRecordList("#leadsList", state.leads, "No leads yet. Submit from the generated website.");
 }
 
+window.addEventListener("message", function (event) {
+  const d = event.data;
+  if (!d || !d.type) return;
+  const now = new Date().toLocaleTimeString();
+  if (d.type === "order") {
+    state.orders.unshift({ customer: d.customer || "Customer", request: d.order || d.request || "", contact: d.phone || d.contact || "", time: now });
+    renderAdmin();
+  } else if (d.type === "reservation") {
+    state.bookings.unshift({ customer: d.customer || "Guest", request: `${d.guests || 1} guest(s) on ${d.date || "TBD"}`, contact: d.email || "", time: now });
+    renderAdmin();
+  } else if (d.type === "lead") {
+    state.leads.unshift({ customer: d.customer || "Visitor", request: d.message || d.request || "", contact: d.contact || d.email || "", time: now });
+    renderAdmin();
+  }
+});
+
 function renderRecordList(selector, records, emptyText) {
   document.querySelector(selector).innerHTML = records.length
     ? records
@@ -1187,6 +1214,138 @@ function qaFixesFor(spec) {
   };
 }
 
+async function requestLiveBuildSpec() {
+  const response = await fetch(
+    "/generate-buildspec-stream",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type":
+          "application/json",
+      },
+      body: JSON.stringify({
+        business_input: getBusinessProfileInput(),
+        asset_extractions: state.assetExtractions,
+      }),
+    },
+  );
+
+  if (!response.ok) {
+    throw new Error(
+      `${response.status} ${await response.text()}`
+    );
+  }
+
+  if (!response.body) {
+    throw new Error(
+      "Live graph stream is not available in this browser."
+    );
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finalPayload = null;
+
+  const processSseBlock = (block) => {
+    const lines = block.split(/\r?\n/);
+    let eventName = "message";
+    const dataLines = [];
+
+    for (const line of lines) {
+      if (line.startsWith("event:")) {
+        eventName = line.slice(6).trim();
+      } else if (line.startsWith("data:")) {
+        dataLines.push(line.slice(5).trimStart());
+      }
+    }
+
+    if (!dataLines.length) return;
+
+    const payload = JSON.parse(
+      dataLines.join("\n"),
+    );
+
+    if (eventName === "status") {
+      pushTimelineEvent(
+        "System",
+        payload.message || "Live graph execution started.",
+        "active",
+      );
+      return;
+    }
+
+    if (eventName === "buildspec") {
+      state.assetExtractions =
+        payload.assetExtractions || [];
+      state.extractedAssetText =
+        payload.assetSignals || "";
+      state.amdInsights =
+        buildAmdInsights(
+          state.assetExtractions,
+        );
+      state.spec =
+        payload.buildSpec ||
+        generateBuildSpec();
+      return;
+    }
+
+    if (eventName === "graph_update") {
+      const event = payload.event || {};
+      state.graphEvents.push(event);
+      renderGraphEvent(event);
+      return;
+    }
+
+    if (eventName === "graph_error") {
+      pushTimelineEvent(
+        "System",
+        payload.error || "Planner graph switched to fallback mode.",
+        "warning",
+      );
+      return;
+    }
+
+    if (eventName === "complete") {
+      finalPayload = payload;
+    }
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(
+      value,
+      {
+        stream: true,
+      },
+    );
+
+    const blocks = buffer.split(/\n\n/);
+    buffer = blocks.pop() || "";
+
+    for (const block of blocks) {
+      if (block.trim()) {
+        processSseBlock(block);
+      }
+    }
+  }
+
+  buffer += decoder.decode();
+  if (buffer.trim()) {
+    processSseBlock(buffer);
+  }
+
+  if (!finalPayload) {
+    throw new Error(
+      "Live graph stream ended before a final payload arrived."
+    );
+  }
+
+  return finalPayload;
+}
+
 async function runDemo() {
   if (state.isGenerating) return;
 
@@ -1195,6 +1354,8 @@ async function runDemo() {
   try {
     state.timelineEvents = [];
     state.graphEvents = [];
+    state._evolutionCritiquePushed = false;
+    state._evolutionSimPushed = false;
     document
       .querySelectorAll(
         ".graph-node",
@@ -1222,30 +1383,12 @@ async function runDemo() {
       )
       ?.remove();
 
-    const response =
-      await fetch(
-        "/generate-buildspec",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type":
-              "application/json",
-          },
-          body: JSON.stringify({
-            business_input: getBusinessProfileInput(),
-            asset_extractions: state.assetExtractions,
-          }),
-        },
-      );
-
-    if (!response.ok) {
-      throw new Error(
-        `${response.status} ${await response.text()}`
-      );
-    }
+    showPanel(
+      "reasoning",
+    );
 
     const result =
-      await response.json();
+      await requestLiveBuildSpec();
 
     console.log(
       "GRAPH RESPONSE",
@@ -1253,7 +1396,9 @@ async function runDemo() {
     );
 
     state.graphEvents =
-      result?.graphExecution?.events || [];
+      result?.graphExecution?.events ||
+      state.graphEvents ||
+      [];
     state.graphStatus =
       result?.graphStatus ||
       {
@@ -1294,10 +1439,6 @@ async function runDemo() {
       );
     }
 
-    await replayGraphEvents(
-      state.graphEvents,
-    );
-
     renderSpecDynamic(
       state.spec,
       state.designSpec,
@@ -1317,7 +1458,7 @@ async function runDemo() {
     renderAmdStatus(
       state.graphEvents.length
         ? "Local planner"
-        : "Fallback planner",
+        : "Fallback planner"
     );
 
     showPanel(
@@ -1345,11 +1486,12 @@ async function runDemo() {
   }
 }
 
-async function applyAmdPayload(payload, sourceLabel = "AMD Developer Cloud import") {
+async function applyAmdPayload(payload, sourceLabel = "Pollinations import") {
   state.assetExtractions = payload.assetExtractions || [];
   state.extractedAssetText = payload.assetSignals || "";
   state.amdInsights = buildAmdInsights(state.assetExtractions);
   state.spec = payload.buildSpec;
+  state.graphExecution = payload.graphExecution || null;
   state.designSpec =
     normalizeServerDesignSpec(
       payload.designSpec ||
@@ -1359,7 +1501,7 @@ async function applyAmdPayload(payload, sourceLabel = "AMD Developer Cloud impor
 
   document.querySelector("#assetExtraction").textContent =
     payload.assetSignals ||
-    "AMD inference completed. No image-specific signals were returned, but BuildSpec generation succeeded.";
+    "Extraction complete. No image-specific signals were returned, but BuildSpec generation succeeded.";
 
   await renderAllFromSpec(sourceLabel);
 }
@@ -1420,8 +1562,8 @@ document.querySelector("#businessAssets").addEventListener("change", async (even
   renderAssetPreview();
   document.querySelector("#assetExtraction").textContent =
     files.length
-      ? `${files.length} asset${files.length === 1 ? "" : "s"} loaded. Click Generate With AMD to send them to the backend.`
-      : "No assets extracted yet. In the AMD flow, this step is powered by a vision/multimodal model on GPU.";
+      ? `${files.length} asset${files.length === 1 ? "" : "s"} loaded. Click Extract & Build Site to analyse them.`
+      : "No assets extracted yet. Upload images and click Extract & Build Site.";
 });
 
 document.querySelector("#extractAssets").addEventListener("click", () => {
@@ -1439,7 +1581,7 @@ async function extractAssetsFromBackend() {
       status.textContent = "Upload at least one image before extraction.";
       return;
     }
-    status.textContent = `Uploading ${files.length} image${files.length === 1 ? "" : "s"} for asset extraction...`;
+    status.textContent = `Sending ${files.length} image${files.length === 1 ? "" : "s"} to Pollinations for extraction...`;
 
     const payload = await requestAmdBuildSpec(
       "/extract-assets",
@@ -1453,7 +1595,7 @@ async function extractAssetsFromBackend() {
     state.amdInsights = buildAmdInsights(state.assetExtractions);
     status.textContent =
       payload.assetSignals ||
-      "Asset extraction completed, but no strong signals were returned.";
+      "Extraction complete, but no strong signals were returned.";
   } catch (error) {
     status.textContent =
       [
@@ -1495,7 +1637,7 @@ document.querySelector("#clearAssets").addEventListener("click", () => {
   document.querySelector("#businessAssets").value = "";
   document.querySelector("#assetPreview").innerHTML = "";
   document.querySelector("#assetExtraction").textContent =
-    "No assets extracted yet. In the AMD flow, this step is powered by a vision/multimodal model on GPU.";
+    "No assets extracted yet. Upload images and click Extract & Build Site.";
 });
 
 document.querySelector("#copySpec").addEventListener("click", async () => {
@@ -1535,9 +1677,9 @@ document.querySelector("#amdSpecFile").addEventListener("change", async (event) 
     validateImportedSpec(imported);
     document.querySelector("#amdSpecInput").value = JSON.stringify(imported, null, 2);
     document.querySelector("#amdStatus").textContent =
-      `Loaded ${file.name}. Click Apply AMD Spec to drive the app with this BuildSpec.`;
+      `Loaded ${file.name}. Click Apply Spec to drive the app with this BuildSpec.`;
   } catch (error) {
-    document.querySelector("#amdStatus").textContent = `File import failed: ${error.message}`;
+    document.querySelector("#amdStatus").textContent = `Import failed: ${error.message}`;
   }
 });
 
@@ -1552,16 +1694,16 @@ document.querySelector("#applyAmdSpec").addEventListener("click", async () => {
     validateImportedSpec(imported);
     state.spec = imported;
     state.designSpec = generateDesignSpec(imported);
-    await renderAllFromSpec("AMD Developer Cloud import");
+    await renderAllFromSpec("Pollinations import");
     showPanel("spec");
   } catch (error) {
-    document.querySelector("#amdStatus").textContent = `Import failed: ${error.message}`;
+    document.querySelector("#amdStatus").textContent = `Apply failed: ${error.message}`;
   }
 });
 
 document.querySelector("#loadLatestAmdResult").addEventListener("click", async () => {
   const status = document.querySelector("#amdStatus");
-  status.textContent = "Loading the latest AMD payload written by the notebook...";
+  status.textContent = "Loading the latest saved result...";
   try {
     const response = await fetch("./amd_result.json", {
       method: "GET",
@@ -1574,11 +1716,11 @@ document.querySelector("#loadLatestAmdResult").addEventListener("click", async (
     const payload = await response.json();
     validateAmdPayload(payload);
     document.querySelector("#amdSpecInput").value = JSON.stringify(payload.buildSpec, null, 2);
-    await applyAmdPayload(payload, "AMD notebook bridge import");
+    await applyAmdPayload(payload, "Pollinations import");
     status.textContent = "Loaded amd_result.json from the notebook workspace and applied it to the UI.";
     showPanel("website");
   } catch (error) {
-    status.textContent = `Latest AMD result load failed: ${error.message}`;
+    status.textContent = `Load failed: ${error.message}`;
   }
 });
 
@@ -1601,7 +1743,7 @@ function validateImportedSpec(spec) {
 
 function validateAmdPayload(payload) {
   if (!payload || !payload.buildSpec) {
-    throw new Error("missing AMD payload key: buildSpec");
+    throw new Error("missing payload key: buildSpec");
   }
   validateImportedSpec(payload.buildSpec);
 }
@@ -1610,12 +1752,12 @@ function renderAmdStatus(sourceLabel) {
   const status = document.querySelector("#amdStatus");
   if (!status || !state.spec) return;
   const source =
-    sourceLabel === "AMD Developer Cloud import"
-      ? "AMD-generated BuildSpec is active and driving the local product flow."
+    sourceLabel === "Pollinations import"
+      ? "Pollinations-generated BuildSpec is active."
       : sourceLabel === "Fallback planner"
-        ? "Local fallback planner is active. Uploaded images were still sent to the backend extraction pipeline."
-        : "Local deterministic planner is active. Use this shape for AMD notebook inference output.";
-  status.textContent = `${source} Current spec: ${state.spec.business.name}, ${state.spec.business.vertical.replaceAll("_", " ")}, readiness ${state.spec.scores.businessReadiness}.`;
+        ? "Local fallback planner active. Images were sent to Pollinations vision extraction."
+        : "Planner is active. Paste a BuildSpec JSON below to override."
+  status.textContent = `${source} Spec: ${state.spec.business.name}, ${state.spec.business.vertical.replaceAll("_", " ")}, readiness ${state.spec.scores.businessReadiness}.`;
 }
 
 function normalizeApiUrl(rawValue) {
@@ -1727,7 +1869,7 @@ function mergeAmdPayloads(profile, businessDetails, payloads) {
   const graphExecution = payloads[payloads.length - 1]?.graphExecution;
 
   return {
-    source: "amd-developer-cloud-qwen2.5-vl-batched",
+    source: "pollinations-vision-batched",
     assetSignals,
     assetExtractions,
     buildSpec,
@@ -1860,7 +2002,7 @@ function extractAssetSignals(assets) {
     `Files reviewed: ${assets.map((asset) => asset.name).join(", ")}`,
     `Detected: ${[...signals].join(", ")}`,
     ...inferred.map((item) => `- ${item}`),
-    "AMD production path: run a vision/multimodal model on Developer Cloud to extract menu items, services, prices, contact details, and visual brand cues.",
+    "Pollinations vision extraction: upload images and click Extract & Build Site to extract menu items, services, prices, contact details, and visual brand cues.",
   ].join("\n");
 }
 
@@ -1872,7 +2014,7 @@ function renderAmdInsightsPanel() {
     <section class="insights-panel">
       <div>
         <strong>AI found in your uploads</strong>
-        <p>${state.amdInsights.assetCount} asset${state.amdInsights.assetCount === 1 ? "" : "s"} analysed on backend vision extraction.</p>
+        <p>${state.amdInsights.assetCount} asset${state.amdInsights.assetCount === 1 ? "" : "s"} analysed by Pollinations vision extraction.</p>
       </div>
       <div class="insights-grid">
         <article class="insight-card">
@@ -2055,10 +2197,27 @@ function renderSpecDynamic(spec, designSpec) {
 
 function renderWebsiteDynamic(spec, designSpec) {
   const restaurant = buildRestaurantExperienceData();
+  designSpec =
+    ensureRestaurantCommerceDesign(
+      spec,
+      designSpec,
+      restaurant,
+    );
   const visual = designAwareVisual(spec, designSpec);
 
   const pages =
-    designSpec.pages || [];
+    (designSpec.pages || []).length
+      ? designSpec.pages
+      : (spec.pages || []).map((page) => ({
+          name: page,
+          title: page,
+          pageType: String(page).toLowerCase(),
+          sections: [],
+        }));
+
+  if (pages.length && activePageIndex >= pages.length) {
+    activePageIndex = 0;
+  }
 
   const currentPage =
     pages[activePageIndex] ||
@@ -2071,7 +2230,7 @@ function renderWebsiteDynamic(spec, designSpec) {
     ) || pages[0];
 
   const heroSection =
-    (homePage.sections || []).find((section) =>
+    (homePage?.sections || []).find((section) =>
       [
         "hero_offer_banner",
         "hero_trust_banner",
@@ -2081,7 +2240,7 @@ function renderWebsiteDynamic(spec, designSpec) {
     );
 
   const bodySections =
-    (homePage.sections || []).filter((section) => {
+    (homePage?.sections || []).filter((section) => {
       const sectionType =
         getSectionType(section);
 
@@ -2100,6 +2259,29 @@ function renderWebsiteDynamic(spec, designSpec) {
           restaurant,
         )
       : "";
+
+  const renderedBody =
+    pageSections ||
+    bodySections
+      .map((section) =>
+        renderDesignSection(
+          section,
+          spec,
+          designSpec,
+          restaurant,
+        ),
+      )
+      .join("") ||
+    renderAdaptiveGenericSection(
+      {
+        type: "feature_grid",
+        purpose:
+          "Show the core business offer when the agent did not specify detailed sections.",
+      },
+      spec,
+      designSpec,
+      restaurant,
+    );
 
   // const additionalPages =
   //   pages
@@ -2149,7 +2331,8 @@ function renderWebsiteDynamic(spec, designSpec) {
   }
 
   let adaptiveCta =
-    designSpec.primaryAction.label;
+    designSpec.primaryAction?.label ||
+    "Continue";
 
   if (
     spec.business.orderMode ===
@@ -2175,148 +2358,51 @@ function renderWebsiteDynamic(spec, designSpec) {
       "Request Callback";
   }
 
-window.latestSpec = spec;
-window.latestDesignSpec = designSpec;
-window.latestRestaurant = restaurant;
+  window.latestSpec = spec;
+  window.latestDesignSpec = designSpec;
+  window.latestRestaurant = restaurant;
 
-  document.querySelector(
-    "#sitePreview",
-  ).innerHTML = `
-    <section
-      class="generated-hero ${visual.className}"
-      ${buildHeroBackground(
-        spec,
-        restaurant,
-        heroSection,
-      )}
-    >
-      <div>
-        <p class="eyebrow">
-          ${spec.business.location}
-        </p>
-
-        <h3>
-          ${spec.business.name}
-        </h3>
-
-        <p>
-          ${adaptiveHeroCopy}
-        </p>
-
-        ${renderHeroSupportChips(
-          spec,
-          designSpec,
-          restaurant,
-          heroSection,
-        )}
-
-        <button
-          class="primary-button"
-          data-scroll-form
-        >
-          ${adaptiveCta}
-        </button>
-
-        ${
-          spec.business.orderMode
-            ? `
-          <div class="assumption-chip">
-            Optimised for:
-            ${spec.business.orderMode}
-          </div>
-        `
-            : ""
-        }
-
-        ${
-          spec.business.bookingMode
-            ? `
-          <div class="assumption-chip">
-            Booking mode:
-            ${spec.business.bookingMode}
-          </div>
-        `
-            : ""
-        }
-      </div>
-
-      <div class="generated-card restaurant-summary-card">
-        <strong>
-          ${heroCardTitle(
-            designSpec,
-            heroSection,
-          )}
-        </strong>
-
-        <p>
-          ${heroCardBody(
-            spec,
-            designSpec,
-            restaurant,
-            heroSection,
-          )}
-        </p>
-
-        <div class="summary-stats">
-          <div>
-            <span>
-              ${
-                restaurant.items.length ||
-                spec.includedFeatures.length
-              }
-            </span>
-
-            <small>
-              ${
-                restaurant.items.length
-                  ? "menu items"
-                  : "capabilities"
-              }
-            </small>
-          </div>
-
-          <div>
-            <span>
-              ${
-                restaurant.categories.length ||
-                spec.pages.length
-              }
-            </span>
-
-            <small>
-              ${
-                restaurant.categories.length
-                  ? "categories"
-                  : "pages"
-              }
-            </small>
-          </div>
-
-          <div>
-            <span>
-              ${
-                restaurant.priceRange
-              }
-            </span>
-
-            <small>
-              ${
-                designSpec.visual.tone
-              }
-            </small>
+  document.querySelector("#sitePreview").innerHTML =
+    `
+      <section
+        class="generated-hero ${visual.className || ""}"
+        ${buildHeroBackground(spec, restaurant, heroSection)}
+      >
+        <div class="generated-hero-copy">
+          <p class="eyebrow">${formatPageLabel(spec.business.vertical)}</p>
+          <h3>${escapeHtml(spec.business.name)}</h3>
+          <p>${escapeHtml(adaptiveHeroCopy)}</p>
+          ${renderHeroSupportChips(spec, designSpec, restaurant, heroSection)}
+          <div class="hero-action-row">
+            <button class="primary-button" type="button" data-generated-action="primary">${escapeHtml(adaptiveCta)}</button>
+            <button class="ghost-button" type="button" data-generated-action="explore">Explore</button>
           </div>
         </div>
+        <aside class="generated-card generated-hero-card">
+          <strong>${escapeHtml(heroCardTitle(designSpec, heroSection))}</strong>
+          <p>${escapeHtml(heroCardBody(spec, designSpec, restaurant, heroSection))}</p>
+          <div class="summary-stats">
+            <div>
+              <span>${restaurant.items.length || spec.includedFeatures.length}</span>
+              <small>${restaurant.items.length ? "menu items" : "features"}</small>
+            </div>
+            <div>
+              <span>${restaurant.categories.length || pages.length}</span>
+              <small>${restaurant.categories.length ? "categories" : "pages"}</small>
+            </div>
+            <div>
+              <span>${restaurant.cartTotalLabel || `${spec.scores?.businessReadiness || "--"}%`}</span>
+              <small>${restaurant.cartTotalLabel ? "cart total" : "readiness"}</small>
+            </div>
+          </div>
+        </aside>
+      </section>
+      <div class="generated-body">
+        ${renderPageNav(spec, { ...designSpec, pages })}
+        ${renderedBody}
+        ${renderDecisionRationaleBand(designSpec)}
       </div>
-    </section>
-
-    <section class="generated-body">
-      ${pageSections}
-
-      ${renderDecisionRationaleBand(
-        designSpec,
-      )}
-    </section>
-  `;
+    `;
 
   attachWebsiteInteractions(
     spec,
@@ -2336,13 +2422,12 @@ function renderDesignSection(section, spec, designSpec, restaurant) {
     case "insights":
       return renderAmdInsightsPanel();
     case "page_nav":
-      return renderPageNav(spec, designSpec);
+      return "";
     case "category_strip":
       return renderCategoryStripSection(restaurant, sectionPurpose);
     case "gallery_strip":
       return `
         <div class="restaurant-topbar">
-          ${renderPageNav(spec, designSpec)}
           <div class="restaurant-thumbs">
             ${restaurant.heroImages.slice(0, 4).map((asset) => `<img src="${asset.url}" alt="${asset.name}" />`).join("")}
           </div>
@@ -2378,8 +2463,222 @@ function renderDesignSection(section, spec, designSpec, restaurant) {
     case "order_form":
       return renderPrimaryWorkflowForm(spec, designSpec, restaurant);
     default:
-      return "";
+      return renderAdaptiveGenericSection(section, spec, designSpec, restaurant);
   }
+}
+
+function ensureRestaurantCommerceDesign(spec, designSpec, restaurant) {
+  const effective =
+    designSpec || generateDesignSpec(spec);
+  const vertical =
+    String(spec.business?.vertical || "").toLowerCase();
+  const isFoodBusiness =
+    ["restaurant", "cafe", "bakery", "food", "pizzeria"].includes(vertical);
+
+  if (!isFoodBusiness) {
+    return effective;
+  }
+
+  const featureKeys =
+    (spec.includedFeatures || []).map((feature) =>
+      String(feature.key || "").toLowerCase(),
+    );
+  const details =
+    [
+      spec.business?.goal,
+      spec.business?.details,
+      spec.business?.unique_selling_points,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+  const hasOrderingIntent =
+    featureKeys.includes("online_ordering") ||
+    /order|pickup|delivery|menu|cart/.test(details) ||
+    restaurant.items.length > 0;
+
+  if (!hasOrderingIntent) {
+    return effective;
+  }
+
+  effective.primaryAction = {
+    label:
+      effective.primaryAction?.kind === "order"
+        ? effective.primaryAction?.label || "Order Now"
+        : "Order Now",
+    kind: "order",
+    placements:
+      effective.primaryAction?.placements?.length
+        ? effective.primaryAction.placements
+        : ["hero", "menu", "section_end"],
+  };
+
+  if (!Array.isArray(effective.pages) || !effective.pages.length) {
+    effective.pages = [
+      {
+        name: "Home",
+        title: "Home",
+        pageType: "home",
+        sections: [],
+      },
+    ];
+  }
+
+  let homePage =
+    effective.pages.find(
+      (page) =>
+        String(page.pageType || page.name || "").toLowerCase() === "home",
+    ) || effective.pages[0];
+
+  homePage.sections = Array.isArray(homePage.sections)
+    ? homePage.sections
+    : [];
+
+  const sectionTypes =
+    homePage.sections.map(getSectionType);
+  const insertBeforeWorkflow =
+    (section) => {
+      const workflowIndex =
+        homePage.sections.findIndex(
+          (candidate) =>
+            getSectionType(candidate) === "primary_workflow_form",
+        );
+      if (workflowIndex >= 0) {
+        homePage.sections.splice(workflowIndex, 0, section);
+      } else {
+        homePage.sections.push(section);
+      }
+    };
+
+  if (
+    !sectionTypes.includes("menu_showcase")
+  ) {
+    insertBeforeWorkflow({
+      type: "menu_showcase",
+      purpose:
+        "Display extracted menu items, prices, and add-to-cart actions before checkout.",
+      rationale:
+        "Restaurant visitors need to inspect the menu before placing an order.",
+    });
+  }
+
+  if (
+    !homePage.sections.some(
+      (section) =>
+        getSectionType(section) === "primary_workflow_form",
+    )
+  ) {
+    homePage.sections.push({
+      type: "primary_workflow_form",
+      purpose:
+        "Capture the final food order or pickup request after menu selection.",
+      rationale:
+        "Online ordering requires a concrete checkout workflow.",
+    });
+  }
+
+  const hasMenuPage =
+    effective.pages.some(
+      (page) =>
+        String(page.pageType || page.name || "").toLowerCase().includes("menu"),
+    );
+
+  if (!hasMenuPage) {
+    effective.pages.push({
+      name: "Menu",
+      title: "Menu",
+      pageType: "menu",
+      sections: [
+        {
+          type: "menu_showcase",
+          purpose:
+            "Let visitors browse the extracted restaurant menu with prices and cart actions.",
+        },
+        {
+          type: "primary_workflow_form",
+          purpose:
+            "Convert selected menu items into an order request.",
+        },
+      ],
+    });
+  }
+
+  effective.decisionRationale =
+    effective.decisionRationale || [];
+  if (
+    !effective.decisionRationale.some((item) =>
+      /menu|cart|order/i.test(String(item)),
+    )
+  ) {
+    effective.decisionRationale.push(
+      "Restaurant commerce guardrail added menu browsing, cart, and order capture because ordering intent was detected.",
+    );
+  }
+
+  return effective;
+}
+
+function renderAdaptiveGenericSection(section, spec, designSpec, restaurant) {
+  const sectionType = getSectionType(section);
+  const sectionPurpose =
+    getSectionPurpose(section) ||
+    (typeof section === "string" ? section : section?.rationale) ||
+    "A focused section to help visitors compare, trust, and take the next step.";
+  const title =
+    typeof section === "string"
+      ? formatPageLabel(section)
+      : section?.title ||
+        section?.name ||
+        formatPageLabel(sectionType || "adaptive section");
+  const sourceItems =
+    restaurant.items.length
+      ? restaurant.items.slice(0, 3).map((item) => ({
+          title: item.name,
+          body: item.description || item.priceLabel || "Featured offer",
+        }))
+      : verticalTiles(spec);
+  const cards =
+    sourceItems.length
+      ? sourceItems
+      : [
+          {
+            title: "Clear Offer",
+            body: "The section keeps the business proposition easy to scan.",
+          },
+          {
+            title: "Trust Context",
+            body: "Supporting details reduce friction before the visitor acts.",
+          },
+          {
+            title: "Action Path",
+            body: "The page keeps the next workflow visible and reachable.",
+          },
+        ];
+
+  return `
+    <section class="adaptive-section">
+      <div class="menu-header">
+        <div>
+          <p class="eyebrow">${escapeHtml(sectionType || "adaptive")}</p>
+          <strong>${escapeHtml(title)}</strong>
+          <p>${escapeHtml(sectionPurpose)}</p>
+        </div>
+      </div>
+      <div class="generated-grid">
+        ${cards
+          .slice(0, 3)
+          .map(
+            (card) => `
+              <article class="generated-tile">
+                <strong>${escapeHtml(card.title)}</strong>
+                <p>${escapeHtml(card.body)}</p>
+              </article>
+            `,
+          )
+          .join("")}
+      </div>
+    </section>
+  `;
 }
 
 function switchGeneratedPage(index) {
@@ -2467,7 +2766,7 @@ function renderCategoryStripSection(restaurant, sectionPurpose) {
     <section class="menu-header category-strip-section">
       <div>
         <strong>Browse by category</strong>
-        <p>${sectionPurpose || "The planner grouped the offer into fast scanning lanes so visitors can compare before they commit."}</p>
+        <p>${sectionPurpose || "Jump into popular categories, current offers, and customer favourites."}</p>
       </div>
       <div class="chip-row">
         ${categories.map((category) => `<span class="chip">${category}</span>`).join("")}
@@ -2481,14 +2780,14 @@ function renderMenuShowcaseSection(spec, restaurant, designSpec, sectionPurpose)
   const featuredItems = restaurant.items.slice(0, 8);
   const isTrustBrowsing = designSpec.primaryAction.label === "Explore Menu" || designSpec.visual.trustEmphasis === "high";
   return `
-    <section class="menu-shell">
+    <section class="menu-shell" id="generatedMenu">
       <div class="menu-column">
         <div class="menu-header">
           <div>
-            <strong>Order online</strong>
+            <strong>Menu highlights</strong>
             <p>${sectionPurpose || (isTrustBrowsing
-              ? "The agent chose a richer exploration flow here so customers can browse, compare, and build confidence before ordering."
-              : "The agent chose a dense, menu-first layout here because this business has rich item and price data that customers will compare quickly.")}</p>
+              ? "Browse signature items, compare categories, and choose when you are ready."
+              : "Pick a favourite, check the price, and add it to your order in one tap.")}</p>
           </div>
           <div class="chip-row">
             ${categoryChips.map((category) => `<span class="chip">${category}</span>`).join("")}
@@ -2516,16 +2815,16 @@ function renderMenuShowcaseSection(spec, restaurant, designSpec, sectionPurpose)
 function renderReviewBandSection(spec, restaurant, sectionPurpose) {
   const reviewCards = [
     {
-      title: "Offer-led discovery",
-      body: restaurant.offers[0] || "Seasonal offers and clear promos are surfaced before the action step.",
+      title: "Easy discovery",
+      body: restaurant.offers[0] || "Seasonal offers and popular choices are easy to scan.",
     },
     {
-      title: "Menu confidence",
+      title: "Menu clarity",
       body: `${restaurant.items[0]?.name || "Signature items"} and pricing stay visible while customers browse.`,
     },
     {
       title: "Local trust",
-      body: `The ${spec.business.name} plan uses proof before asking for the final commitment.`,
+      body: `${spec.business.name} keeps hours, location, and next steps close to the menu.`,
     },
   ];
   return `
@@ -2541,8 +2840,8 @@ function renderReviewBandSection(spec, restaurant, sectionPurpose) {
         )
         .join("")}
       <article class="generated-tile">
-        <strong>Why this appears here</strong>
-        <p>${sectionPurpose || "The planner moved reassurance ahead of the CTA so visitors can browse with more confidence."}</p>
+        <strong>Ready when you are</strong>
+        <p>${sectionPurpose || "Browse first, then order or reserve when the choice feels clear."}</p>
       </article>
     </section>
   `;
@@ -2554,7 +2853,7 @@ function renderTrustBandSection(spec, sectionPurpose) {
     <section class="proof-band trust-band-section">
       <div>
         <strong>Trust signals</strong>
-        <p>${sectionPurpose || "Clear pricing, direct contact, and low-friction next steps reduce hesitation before action."}</p>
+        <p>${sectionPurpose || "Clear pricing, direct contact, and simple next steps make it easy to decide."}</p>
       </div>
       <div class="chip-row">
         ${trustItems.length
@@ -2576,27 +2875,29 @@ function renderPrimaryWorkflowForm(spec, designSpec, restaurant) {
         : "Emergency repair quote";
   const formClass = kind === "order" ? "workflow-form restaurant-order-form" : "workflow-form";
   return `
-    <form id="workflowForm" class="${formClass}" data-type="${kind}">
-      <label>
-        Customer name
-        <input name="customer" value="Alex Morgan" required />
-      </label>
-      <label>
-        ${requestLabel}
-        <input name="request" value="${requestValue}" required />
-      </label>
-      <label>
-        Contact
-        <input name="contact" value="alex@example.com" required />
-      </label>
-      <button class="primary-button" type="submit">${designSpec.primaryAction.label}</button>
-    </form>
+    <section id="generatedWorkflow" class="workflow-section">
+      <form id="workflowForm" class="${formClass}" data-type="${kind}">
+        <label>
+          Customer name
+          <input name="customer" value="Alex Morgan" required />
+        </label>
+        <label>
+          ${requestLabel}
+          <input name="request" value="${requestValue}" required />
+        </label>
+        <label>
+          Contact
+          <input name="contact" value="alex@example.com" required />
+        </label>
+        <button class="primary-button" type="submit">${designSpec.primaryAction.label}</button>
+      </form>
+    </section>
   `;
 }
 
 function buildHeroBackground(spec, restaurant, heroSection) {
   if (!restaurant.heroImages[0]) return "";
-  const heroType = typeof heroSection === "string" ? heroSection : heroSection?.type;
+  const heroType = getSectionType(heroSection);
   const overlay =
     heroType === "hero_trust_banner"
       ? "linear-gradient(115deg, rgba(16, 42, 54, 0.92), rgba(34, 72, 78, 0.74))"
@@ -2605,12 +2906,15 @@ function buildHeroBackground(spec, restaurant, heroSection) {
 }
 
 function attachWebsiteInteractions(spec, designSpec, restaurant) {
-  const scrollButton = document.querySelector("[data-scroll-form]");
-  if (scrollButton) {
-    scrollButton.addEventListener("click", () => {
-      document.querySelector("#workflowForm")?.scrollIntoView({ behavior: "smooth", block: "center" });
+  document.querySelectorAll("[data-generated-action]").forEach((button) => {
+    button.addEventListener("click", () => {
+      routeGeneratedAction(
+        button.dataset.generatedAction,
+        spec,
+        designSpec,
+      );
     });
-  }
+  });
 
   document.querySelectorAll("[data-add-item]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -2637,6 +2941,102 @@ function attachWebsiteInteractions(spec, designSpec, restaurant) {
       renderWebsiteDynamic(spec, designSpec);
     }
     showPanel("admin");
+  });
+}
+
+function routeGeneratedAction(action, spec, designSpec) {
+  const target =
+    resolveGeneratedActionTarget(action, spec, designSpec);
+
+  if (
+    typeof target.pageIndex === "number" &&
+    activePageIndex !== target.pageIndex
+  ) {
+    activePageIndex = target.pageIndex;
+    renderWebsiteDynamic(
+      spec,
+      designSpec,
+    );
+    requestAnimationFrame(() =>
+      scrollGeneratedSelector(target.selector),
+    );
+    return;
+  }
+
+  scrollGeneratedSelector(target.selector);
+}
+
+function resolveGeneratedActionTarget(action, spec, designSpec) {
+  const kind =
+    designSpec.primaryAction?.kind ||
+    "lead";
+  const menuPageIndex =
+    findGeneratedPageIndexBySection(
+      designSpec,
+      "menu_showcase",
+    );
+  const workflowPageIndex =
+    findGeneratedPageIndexBySection(
+      designSpec,
+      "primary_workflow_form",
+    );
+  const firstNonHomePage =
+    (designSpec.pages || []).findIndex(
+      (page) =>
+        String(page.pageType || page.name || "")
+          .toLowerCase() !== "home",
+    );
+
+  if (action === "explore") {
+    if (kind === "order" && menuPageIndex >= 0) {
+      return {
+        pageIndex: menuPageIndex,
+        selector: "#generatedMenu",
+      };
+    }
+    if (firstNonHomePage >= 0) {
+      return {
+        pageIndex: firstNonHomePage,
+        selector: ".generated-page",
+      };
+    }
+    return {
+      pageIndex: activePageIndex,
+      selector: ".generated-body",
+    };
+  }
+
+  if (kind === "order") {
+    return {
+      pageIndex: menuPageIndex >= 0 ? menuPageIndex : activePageIndex,
+      selector: "#generatedMenu",
+    };
+  }
+
+  return {
+    pageIndex: workflowPageIndex >= 0 ? workflowPageIndex : activePageIndex,
+    selector: "#generatedWorkflow",
+  };
+}
+
+function findGeneratedPageIndexBySection(designSpec, sectionType) {
+  return (designSpec.pages || []).findIndex((page) =>
+    (page.sections || []).some(
+      (section) =>
+        getSectionType(section) === sectionType,
+    ),
+  );
+}
+
+function scrollGeneratedSelector(selector) {
+  const target =
+    document.querySelector(selector) ||
+    document.querySelector("#workflowForm") ||
+    document.querySelector(".generated-body");
+
+  target?.scrollIntoView({
+    behavior: "smooth",
+    block: "center",
   });
 }
 
@@ -2685,7 +3085,7 @@ function designAwareVisual(spec, designSpec) {
 }
 
 function heroSectionCopy(spec, designSpec, heroSection) {
-  const heroType = typeof heroSection === "string" ? heroSection : heroSection?.type;
+  const heroType = getSectionType(heroSection);
   if (heroType === "hero_trust_banner") {
     return "The agent chose to open with confidence-building context before the action step, so visitors can explore the offer with more clarity.";
   }
@@ -2693,24 +3093,24 @@ function heroSectionCopy(spec, designSpec, heroSection) {
 }
 
 function renderHeroSupportChips(spec, designSpec, restaurant, heroSection) {
-  const heroType = typeof heroSection === "string" ? heroSection : heroSection?.type;
+  const heroType = getSectionType(heroSection);
   const chips =
     heroType === "hero_trust_banner"
       ? ["Browse before you decide", "Clear pricing", "Local trust signals"]
       : restaurant.offers.length
         ? restaurant.offers.slice(0, 2)
         : restaurant.categories.slice(0, 2).map((category) => `${category} ready to order`);
-  return `<div class="chip-row">${chips.map((item) => `<span class="chip offer-chip">${item}</span>`).join("")}</div>`;
+  return `<div class="chip-row">${chips.map((item) => `<span class="chip offer-chip">${escapeHtml(item)}</span>`).join("")}</div>`;
 }
 
 function heroCardTitle(designSpec, heroSection) {
-  const heroType = typeof heroSection === "string" ? heroSection : heroSection?.type;
+  const heroType = getSectionType(heroSection);
   if (heroType === "hero_trust_banner") return "Trust-first storefront";
   return "Conversion-first storefront";
 }
 
 function heroCardBody(spec, designSpec, restaurant, heroSection) {
-  const heroType = typeof heroSection === "string" ? heroSection : heroSection?.type;
+  const heroType = getSectionType(heroSection);
   if (heroType === "hero_trust_banner") {
     return "This direction emphasises visual reassurance, richer browsing, and social proof before the final order step.";
   }
@@ -2719,22 +3119,56 @@ function heroCardBody(spec, designSpec, restaurant, heroSection) {
 }
 
 function renderDecisionRationaleBand(designSpec) {
-  if (!designSpec.decisionRationale?.length) return "";
-  return `
-    <section class="proof-band">
-      <div>
-        <strong>Planner rationale</strong>
-        <p>${designSpec.brief || "The final storefront direction was selected from the candidate set."}</p>
-      </div>
-      <div class="chip-row">
-        ${designSpec.decisionRationale.slice(0, 4).map((item) => `<span class="chip">${item}</span>`).join("")}
-      </div>
-    </section>
-  `;
+  return "";
 }
 
 function getSectionType(section) {
-  return typeof section === "string" ? section : section?.type || "";
+  const raw =
+    typeof section === "string"
+      ? section
+      : section?.type || "";
+  const value =
+    String(raw).toLowerCase().trim().replaceAll("-", "_");
+  const aliases = {
+    hero: "hero_offer_banner",
+    hero_banner: "hero_offer_banner",
+    hero_section: "hero_offer_banner",
+    offer_banner: "hero_offer_banner",
+    promo_hero: "hero_offer_banner",
+    trust_hero: "hero_trust_banner",
+    credibility_hero: "hero_trust_banner",
+    menu: "menu_showcase",
+    menu_grid: "menu_showcase",
+    featured_menu_grid: "menu_showcase",
+    product_grid: "menu_showcase",
+    catalog: "menu_showcase",
+    services: "feature_grid",
+    service_grid: "feature_grid",
+    services_grid: "feature_grid",
+    features: "feature_grid",
+    testimonials: "review_band",
+    reviews: "review_band",
+    social_proof: "review_band",
+    trust: "trust_band",
+    assurance: "trust_band",
+    credibility: "trust_band",
+    credentials: "trust_band",
+    location_hours: "trust_band",
+    proof: "proof_band",
+    proof_points: "proof_band",
+    booking_form: "primary_workflow_form",
+    reservation_form: "primary_workflow_form",
+    lead_form: "primary_workflow_form",
+    contact_form: "primary_workflow_form",
+    workflow: "primary_workflow_form",
+    workflow_form: "primary_workflow_form",
+    gallery: "gallery_strip",
+    media: "gallery_strip",
+    image_strip: "gallery_strip",
+    categories: "category_strip",
+    category_nav: "category_strip",
+  };
+  return aliases[value] || value;
 }
 
 function getSectionPurpose(section) {
@@ -2813,8 +3247,8 @@ function buildRestaurantExperienceData() {
   const fallbackItems = dedupedItems.length
     ? dedupedItems
     : [
-        { id: "fallback-1", name: "Margherita Pizza", category: "Popular", description: "House favourite with quick delivery flow.", priceLabel: "₹199", priceSortValue: 199, visual: state.assets[0]?.url || "" },
-        { id: "fallback-2", name: "Veggie Feast", category: "Popular", description: "Customer-friendly menu layout with clear pricing.", priceLabel: "₹249", priceSortValue: 249, visual: state.assets[1]?.url || state.assets[0]?.url || "" },
+        { id: "fallback-1", name: "Margherita Pizza", category: "Popular", description: "House favourite with quick delivery flow.", priceLabel: `${detectCurrencySymbol()}9.99`, priceSortValue: 9.99, visual: state.assets[0]?.url || "" },
+        { id: "fallback-2", name: "Veggie Feast", category: "Popular", description: "Customer-friendly menu layout with clear pricing.", priceLabel: `${detectCurrencySymbol()}12.49`, priceSortValue: 12.49, visual: state.assets[1]?.url || state.assets[0]?.url || "" },
       ];
 
   const usableOffers = uniqueCompact(offers.map(sanitizeOfferCopy).filter(Boolean), 4);
@@ -2827,8 +3261,8 @@ function buildRestaurantExperienceData() {
     offers: usableOffers,
     categories: uniqueCategories,
     heroImages: state.assets,
-    priceRange: priceNumbers.length ? `₹${Math.min(...priceNumbers)}-₹${Math.max(...priceNumbers)}` : "₹199-₹399",
-    cartTotalLabel: cartTotal ? `₹${cartTotal}` : "₹0",
+    priceRange: priceNumbers.length ? `${detectCurrencySymbol()}${Math.min(...priceNumbers)}-${detectCurrencySymbol()}${Math.max(...priceNumbers)}` : `${detectCurrencySymbol()}9.99-${detectCurrencySymbol()}24.99`,
+    cartTotalLabel: cartTotal ? `${detectCurrencySymbol()}${cartTotal}` : `${detectCurrencySymbol()}0`,
   };
 }
 
@@ -2855,8 +3289,8 @@ function buildMenuDescription(itemName, categoryName, signals) {
 function sanitizeMenuLabel(value) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
   if (!text) return "";
-  if (text.length > 48) return "";
-  if (/combo student|drive\/free deals|family pack|bucket deal|meal bundles/i.test(text)) return "";
+  if (text.length > 80) return text.slice(0, 77) + "...";
+  if (/placeholder|template|lorem|sample text/i.test(text)) return "";
   return text;
 }
 
@@ -2872,26 +3306,35 @@ function compactSignalLabel(value) {
   return text.length > 28 ? `${text.slice(0, 25)}...` : text;
 }
 
+function detectCurrencySymbol() {
+  const location = (state.spec?.business?.location || "").toLowerCase();
+  const indiaKeywords = ["india", "bangalore", "bengaluru", "mumbai", "delhi", "chennai", "hyderabad", "pune", "kolkata"];
+  return indiaKeywords.some((k) => location.includes(k)) ? "\u20b9" : "$";
+}
+
 function formatMenuPrice(value) {
+  const sym = detectCurrencySymbol();
+  const fallback = sym === "\u20b9" ? `${sym}199` : `${sym}9.99`;
   if (Array.isArray(value) && value.length) {
     const numeric = value.filter((entry) => Number.isFinite(Number(entry))).map(Number);
-    if (!numeric.length) return "₹199";
+    if (!numeric.length) return fallback;
     const minimum = Math.min(...numeric);
     const maximum = Math.max(...numeric);
-    return minimum === maximum ? `₹${minimum}` : `₹${minimum} - ₹${maximum}`;
+    return minimum === maximum ? `${sym}${minimum}` : `${sym}${minimum} - ${sym}${maximum}`;
   }
   if (Number.isFinite(Number(value))) {
-    return `₹${Number(value)}`;
+    return `${sym}${Number(value)}`;
   }
-  return "₹199";
+  return fallback;
 }
 
 function getMenuPriceNumber(value) {
+  const fallback = detectCurrencySymbol() === "\u20b9" ? 199 : 9.99;
   if (Array.isArray(value) && value.length) {
     const numeric = value.filter((entry) => Number.isFinite(Number(entry))).map(Number);
-    return numeric.length ? Math.min(...numeric) : 0;
+    return numeric.length ? Math.min(...numeric) : fallback;
   }
-  return Number.isFinite(Number(value)) ? Number(value) : 0;
+  return Number.isFinite(Number(value)) ? Number(value) : fallback;
 }
 
 function dedupeMenuItems(items) {
@@ -3029,26 +3472,47 @@ function renderResearch(result) {
 
   const seo = data.local_seo;
   if (seo) {
-    const keywords = seo.target_keywords || seo.high_value_keywords || seo.keywords || seo.local_search_terms || [];
+    const keywords = [
+      ...(seo.target_keywords || []),
+      ...(seo.local_search_terms || []),
+      ...(keywords => keywords.length === 0 ? [...(seo.content_recommendations || []), ...(seo.local_optimization_tips || [])] : [])(
+        [...(seo.target_keywords || []), ...(seo.local_search_terms || [])]
+      ),
+    ].filter(Boolean);
     cards.push(`
       <div class="research-card">
         <h5>Local SEO Strategy</h5>
         ${renderList(keywords, "No keyword recommendations.")}
         ${seo.review_strategy ? `<p><strong>Reviews:</strong> ${escapeHtml(seo.review_strategy)}</p>` : ""}
+        ${seo.directory_listings?.length ? `<p><strong>Directories:</strong> ${escapeHtml(seo.directory_listings.join(", "))}</p>` : ""}
       </div>
     `);
   }
 
   const menu = data.menu_extraction;
-  if (menu && typeof menu === "object" && Object.keys(menu).length > 0) {
-    const items = menu.items || menu.services || [];
-    const itemNames = items.map((i) => (typeof i === "string" ? i : i.name || JSON.stringify(i)));
-    cards.push(`
-      <div class="research-card">
-        <h5>Menu / Service Extraction</h5>
-        ${renderList(itemNames, "No items extracted from uploaded assets.")}
-      </div>
-    `);
+  if (menu && typeof menu === "object") {
+    if (Object.keys(menu).length === 0) {
+      cards.push(`
+        <div class="research-card">
+          <h5>Menu / Service Extraction</h5>
+          <p class="empty">No assets uploaded. Add menu images or PDFs to the form to extract items.</p>
+        </div>
+      `);
+    } else {
+      const rawItems = menu.items || menu.services || [];
+      let itemNames = rawItems.map((i) => (typeof i === "string" ? i : i.name || i.title || JSON.stringify(i))).filter(Boolean);
+      if (!itemNames.length) itemNames = (menu.categories || []).filter(Boolean);
+      if (!itemNames.length) itemNames = (menu.special_offers || []).filter(Boolean);
+      if (!itemNames.length) itemNames = (menu.business_highlights || []).filter(Boolean);
+      const highlights = menu.business_highlights || [];
+      cards.push(`
+        <div class="research-card">
+          <h5>Menu / Service Extraction</h5>
+          ${renderList(itemNames, "No items could be extracted. Try uploading a clearer menu image or PDF.")}
+          ${highlights.length && itemNames !== highlights ? `<p><strong>Highlights:</strong> ${escapeHtml(highlights.join("; "))}</p>` : ""}
+        </div>
+      `);
+    }
   }
 
   content.innerHTML = cards.length
@@ -3104,6 +3568,15 @@ function renderGeneratedCode(result) {
   if (previewHtml) {
     const frame = content.querySelector("#sitePreviewFrame");
     if (frame) frame.srcdoc = previewHtml;
+
+    const sitePreview = document.querySelector("#sitePreview");
+    if (sitePreview) {
+      const iframe = document.createElement("iframe");
+      iframe.style.cssText = "width:100%;height:650px;border:none;border-radius:10px;display:block;background:#fff;";
+      iframe.srcdoc = previewHtml;
+      sitePreview.innerHTML = "";
+      sitePreview.appendChild(iframe);
+    }
   }
 }
 
@@ -3165,7 +3638,11 @@ function renderDeployment(result) {
   const cards = [];
 
   if (pkg.database_schema) {
-    const tables = pkg.database_schema.tables || [];
+    const tables = Array.isArray(pkg.database_schema.tables)
+      ? pkg.database_schema.tables
+      : Array.isArray(pkg.database_schema)
+      ? pkg.database_schema
+      : [];
     cards.push(`
       <div class="deployment-card">
         <h5>Database Schema<span class="score-pill">${tables.length} tables</span></h5>
@@ -3238,7 +3715,20 @@ async function runProductionPipeline() {
   // 2. Code Generation
   pushTimelineEvent("Code Generation Agent", "Generating Next.js + Tailwind source from BuildSpec...", "active");
   try {
-    const code = await postJSON("/generate-code", { buildSpec: state.spec });
+    const foodVerticals = ["restaurant", "cafe", "bakery", "food", "pizzeria"];
+    const menuItems = foodVerticals.includes(state.spec?.business?.vertical)
+      ? (buildRestaurantExperienceData().items || [])
+      : [];
+    const finalState = state.graphExecution?.final_state || {};
+    const code = await postJSON("/generate-code", {
+      buildSpec: { ...state.spec, menuItems },
+      agentContext: {
+        requirements_spec: finalState.requirements_spec || null,
+        design_spec: finalState.design_spec || null,
+        reasoning_notes: finalState.reasoning_notes || [],
+        retrieved_memories: finalState.retrieved_memories || [],
+      },
+    });
     state.pipeline.generatedCode = code;
     renderGeneratedCode(code);
     pushTimelineEvent("Code Generation Agent", "Production code generated.", "planned");

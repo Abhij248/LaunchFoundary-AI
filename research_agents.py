@@ -150,10 +150,30 @@ class MenuServiceExtractionAgent(ResearchAgent):
         business_name = context.get("name", "")
         vertical = context.get("vertical", "unknown")
         assets = context.get("assets", [])
-        asset_descriptions = "\n".join(
-            [f"Asset {i+1}: {asset.get('description', 'No description')}" 
-             for i, asset in enumerate(assets)]
-        )
+        asset_lines = []
+        for i, asset in enumerate(assets):
+            parsed = asset.get("parsed") or asset
+            info = parsed.get("extracted_business_info") or {}
+            signals = parsed.get("business_signals") or []
+            items_visible = info.get("services_or_items") or info.get("menu_items") or []
+            description = (
+                asset.get("description")
+                or parsed.get("description")
+                or parsed.get("asset_type", "")
+            )
+            parts = [f"Asset {i+1} ({description or 'uploaded file'}):"]
+            if items_visible:
+                parts.append(f"  Items/services visible: {', '.join(str(x) for x in items_visible[:20])}")
+            if signals:
+                parts.append(f"  Business signals: {'; '.join(str(s) for s in signals[:10])}")
+            if not items_visible and not signals:
+                raw_text = asset.get("raw_text") or asset.get("text") or ""
+                if raw_text:
+                    parts.append(f"  Raw text: {raw_text[:500]}")
+                else:
+                    parts.append("  (no extractable content)")
+            asset_lines.append("\n".join(parts))
+        asset_descriptions = "\n".join(asset_lines) or "No asset content available."
         
         prompt = f"""
         Extract menu or service information from these business assets:

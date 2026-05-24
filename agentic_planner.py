@@ -38,6 +38,32 @@ def load_local_env() -> None:
 load_local_env()
 
 
+def parse_temperature(
+    value: str | float | int | None,
+    fallback: float,
+) -> float:
+    try:
+        if value is None:
+            return fallback
+        return clamp_temperature(
+            float(value)
+        )
+    except (TypeError, ValueError):
+        return fallback
+
+
+def clamp_temperature(
+    value: float,
+) -> float:
+    return max(
+        0.0,
+        min(
+            1.2,
+            float(value),
+        ),
+    )
+
+
 class ModelJsonPlanner:
 
     def __init__(
@@ -73,6 +99,17 @@ class ModelJsonPlanner:
         self.failure_count = 0
 
         self.request_errors: list[str] = []
+
+        self.default_temperature = parse_temperature(
+            os.getenv(
+                "POLLINATIONS_TEXT_TEMPERATURE",
+                os.getenv(
+                    "pollinations_text_temperature",
+                    "0.2",
+                ),
+            ),
+            fallback=0.2,
+        )
 
     def begin_request(
         self,
@@ -115,6 +152,7 @@ class ModelJsonPlanner:
         prompt: str,
         schema_model: type[SchemaT],
         max_new_tokens: int = 180,
+        temperature: float | None = None,
     ) -> SchemaT:
         
         prompt += """
@@ -140,6 +178,7 @@ class ModelJsonPlanner:
         raw = self.generate_text(
             prompt,
             max_new_tokens=max_new_tokens,
+            temperature=temperature,
         )
 
         parsed = parse_json_object(
@@ -168,6 +207,7 @@ class ModelJsonPlanner:
                 self.generate_text(
                     retry_prompt,
                     max_new_tokens=max_new_tokens,
+                    temperature=0.1,
                 )
             )
 
@@ -185,7 +225,13 @@ class ModelJsonPlanner:
         self,
         prompt: str,
         max_new_tokens: int = 500,
+        temperature: float | None = None,
     ) -> str:
+        request_temperature = clamp_temperature(
+            self.default_temperature
+            if temperature is None
+            else temperature
+        )
         last_error = None
         for _ in range(2):
             try:
@@ -211,7 +257,7 @@ class ModelJsonPlanner:
                                     ],
                                 }
                             ],
-                            "temperature": 0,
+                            "temperature": request_temperature,
                             "max_tokens": max_new_tokens,
                         },
                         timeout=60.0

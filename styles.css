@@ -476,15 +476,54 @@ textarea {
     radial-gradient(circle at 86% 18%, rgba(217, 155, 40, 0.38), transparent 34%);
 }
 
+.generated-hero {
+  position: relative;
+  z-index: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(280px, 0.75fr);
+  gap: clamp(28px, 5vw, 72px);
+  align-items: center;
+  min-height: 520px;
+  padding: clamp(48px, 7vw, 96px);
+  overflow: hidden;
+  color: white;
+  isolation: isolate;
+}
+
+.generated-hero-copy {
+  display: grid;
+  gap: 18px;
+}
+
+.generated-hero-card {
+  display: grid;
+  gap: 18px;
+  align-self: stretch;
+  align-content: center;
+}
+
+.generated-hero-card > strong {
+  font-size: 22px;
+}
+
+.hero-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+
+.adaptive-section {
+  display: grid;
+  gap: 18px;
+}
+
 .generated-hero h3 {
-  font-size: clamp(54px, 7vw, 92px);
-  line-height: 0.92;
-  letter-spacing: -0.05em;
-
-  max-width: 10ch;
-
-  margin-bottom: 28px;
-
+  font-size: clamp(42px, 6vw, 76px);
+  line-height: 0.98;
+  letter-spacing: 0;
+  max-width: 13ch;
+  margin-bottom: 10px;
   font-weight: 900;
 }
 
@@ -561,7 +600,7 @@ textarea {
 
   display: grid;
 
-  gap: 72px;
+  gap: 48px;
 
   background:
     linear-gradient(
@@ -595,15 +634,17 @@ textarea {
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
-  padding-bottom: 14px;
-  border-bottom: 1px solid var(--line);
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(255,255,255,0.72);
   color: var(--muted);
   font-size: 13px;
   font-weight: 800;
 }
 
 .nav-pill {
-  padding: 6px 10px;
+  padding: 9px 13px;
   border-radius: 999px;
   border: 1px solid var(--line);
   background: #eef7f3;
@@ -643,7 +684,7 @@ textarea {
 .generated-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
+  gap: 20px;
 }
 
 .generated-tile {
@@ -653,7 +694,8 @@ textarea {
 
   padding: 24px;
 
-  background: rgba(255,255,255,0.88);
+  background:
+    linear-gradient(180deg, #ffffff, #f7fbf9);
 
   box-shadow:
     0 10px 30px rgba(15, 23, 42, 0.06);
@@ -681,9 +723,11 @@ textarea {
   gap: 16px;
   align-items: center;
   border: 1px solid #c7d9d0;
-  border-radius: 14px;
-  background: #eef7f3;
-  padding: 16px;
+  border-radius: 22px;
+  background:
+    linear-gradient(135deg, #ffffff, #eef7f3);
+  padding: 22px;
+  box-shadow: 0 12px 30px rgba(15,23,42,0.06);
 }
 
 .proof-band p {
@@ -776,8 +820,8 @@ textarea {
 
 .menu-shell {
   display: grid;
-  grid-template-columns: minmax(0, 1.45fr) minmax(300px, 0.75fr);
-  gap: 18px;
+  grid-template-columns: minmax(0, 1.5fr) minmax(300px, 0.7fr);
+  gap: 24px;
   align-items: start;
 }
 
@@ -790,10 +834,12 @@ textarea {
 .menu-header {
   display: grid;
   gap: 12px;
-  padding: 16px;
+  padding: 20px;
   border: 1px solid var(--line);
-  border-radius: 20px;
-  background: #fbfdfb;
+  border-radius: 24px;
+  background:
+    linear-gradient(180deg, #ffffff, #f7fbf9);
+  box-shadow: 0 10px 28px rgba(15,23,42,0.05);
 }
 
 .menu-header p {
@@ -808,14 +854,24 @@ textarea {
 }
 
 .menu-card {
-  background: white;
+  background:
+    linear-gradient(180deg, #ffffff 0%, #fbfdfb 100%);
+  border: 1px solid rgba(199,217,208,0.7);
   border-radius: 24px;
   overflow: hidden;
-  box-shadow: 0 12px 30px rgba(0,0,0,0.08);
+  box-shadow: 0 14px 34px rgba(15,23,42,0.08);
+  transition:
+    transform 0.24s ease,
+    box-shadow 0.24s ease;
+}
+
+.menu-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 22px 46px rgba(15,23,42,0.14);
 }
 
 .menu-card-media {
-  height: 240px;
+  height: 190px;
 
   background:
     linear-gradient(
@@ -844,18 +900,21 @@ textarea {
 
 .menu-card-body {
   display: grid;
-  gap: 10px;
-  padding: 14px;
+  gap: 12px;
+  padding: 16px;
 }
 
 .menu-card-body h4 {
   margin-bottom: 0;
+  font-size: 16px;
+  line-height: 1.25;
 }
 
 .menu-card-body p {
   color: var(--muted);
   margin-bottom: 0;
-  min-height: 44px;
+  min-height: 40px;
+  line-height: 1.45;
 }
 
 .menu-card-meta {
@@ -871,13 +930,15 @@ textarea {
 
 .cart-card {
   display: grid;
-  gap: 12px;
-  padding: 16px;
+  gap: 14px;
+  padding: 20px;
   border: 1px solid var(--line);
   border-radius: 28px;
-  background: #fbfdfb;
+  background:
+    linear-gradient(180deg, #ffffff, #eef7f3);
   position: sticky;
   top: 18px;
+  box-shadow: 0 16px 40px rgba(15,23,42,0.09);
 }
 
 .cart-card p {
@@ -940,6 +1001,14 @@ textarea {
   border: 1px solid var(--line);
   border-radius: 14px;
   background: var(--soft);
+}
+
+.workflow-section {
+  scroll-margin-top: 24px;
+}
+
+#generatedMenu {
+  scroll-margin-top: 24px;
 }
 
 .workflow-form button {
@@ -1375,23 +1444,15 @@ textarea {
 }
 
 .graph-panel {
-  margin-top: 22px;
-
-  padding: 22px;
-
-  border-radius: 20px;
-
-  background:
-    linear-gradient(
-      145deg,
-      rgba(18,24,38,0.96),
-      rgba(25,34,52,0.96)
-    );
-
+  margin-top: 0;
+  margin-bottom: 18px;
+  padding: 20px 24px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
   color: white;
-
-  border:
-    1px solid rgba(255,255,255,0.08);
+  border: 1px solid rgba(99,102,241,0.25);
+  box-shadow: 0 4px 24px rgba(99,102,241,0.12);
+  overflow-x: auto;
 }
 
 .graph-status-banner {
@@ -1410,77 +1471,104 @@ textarea {
 }
 
 .graph-header {
-  font-size: 1.05rem;
-  font-weight: 800;
-  margin-bottom: 18px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(165,180,252,0.8);
+  margin-bottom: 16px;
 }
 
 .graph-flow {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
-}
-.graph-node.active {
-  background: var(--accent);
-
-  color: white;
-
-  box-shadow:
-    0 0 0 1px rgba(13,124,102,0.2),
-    0 12px 40px rgba(13,124,102,0.35);
-
-  transform: scale(1.03);
-}
-
-.graph-node.completed {
-  opacity: 0.75;
+  gap: 4px;
+  min-width: max-content;
 }
 
 .graph-node {
-  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.08);
+  transition: all 0.3s cubic-bezier(0.4,0,0.2,1);
+  min-width: 68px;
+  cursor: default;
+}
 
-  border-radius: 14px;
+.gn-num {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(99,102,241,0.2);
+  border: 1.5px solid rgba(99,102,241,0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  font-weight: 800;
+  color: #a5b4fc;
+  transition: all 0.3s ease;
+}
 
-  background:
-    rgba(255,255,255,0.06);
-
-  border:
-    1px solid rgba(255,255,255,0.08);
-
-  font-size: 0.9rem;
-  font-weight: 700;
-
-  transition:
-    all 0.28s ease;
+.gn-label {
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: rgba(255,255,255,0.45);
+  text-align: center;
+  transition: color 0.3s ease;
+  white-space: nowrap;
 }
 
 .graph-arrow {
-  opacity: 0.4;
-  font-size: 18px;
+  color: rgba(99,102,241,0.3);
+  font-size: 14px;
+  flex-shrink: 0;
+  margin: 0 2px;
+  padding-bottom: 16px;
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(99,102,241,0.5); }
+  50% { box-shadow: 0 0 0 6px rgba(99,102,241,0); }
 }
 
 .graph-node.active {
-  background:
-    linear-gradient(
-      145deg,
-      #4f46e5,
-      #7c3aed
-    );
+  background: linear-gradient(145deg, #4f46e5, #7c3aed);
+  border-color: #6366f1;
+  transform: translateY(-3px);
+  box-shadow: 0 8px 24px rgba(99,102,241,0.4);
+  animation: pulse-glow 1.5s infinite;
+}
 
-  transform:
-    translateY(-2px) scale(1.04);
+.graph-node.active .gn-num {
+  background: rgba(255,255,255,0.25);
+  border-color: rgba(255,255,255,0.5);
+  color: #fff;
+}
 
-  box-shadow:
-    0 10px 30px rgba(99,102,241,0.35);
+.graph-node.active .gn-label {
+  color: rgba(255,255,255,0.9);
 }
 
 .graph-node.completed {
-  background:
-    rgba(16,185,129,0.18);
+  background: rgba(16,185,129,0.12);
+  border-color: rgba(16,185,129,0.3);
+}
 
-  border-color:
-    rgba(16,185,129,0.38);
+.graph-node.completed .gn-num {
+  background: rgba(16,185,129,0.25);
+  border-color: rgba(16,185,129,0.6);
+  color: #34d399;
+}
+
+
+.graph-node.completed .gn-label {
+  color: rgba(52,211,153,0.8);
 }
 
 .thought-line {
@@ -1674,6 +1762,12 @@ textarea {
 
       border-radius: 28px;
     }
+
+  .generated-hero {
+    grid-template-columns: 1fr;
+    min-height: auto;
+  }
+
   .proof-band {
     display: grid;
     grid-template-columns: 1fr;

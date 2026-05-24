@@ -12,10 +12,10 @@ from typing import Any
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from agentic_graph import run_agent_graph
+from agentic_graph import iter_agent_graph_updates, run_agent_graph
 from agentic_models import (
     AssetExtraction,
     CognitiveProvenanceRecord,
@@ -508,6 +508,60 @@ def build_fallback_graph_execution(
     }
 
 
+def build_generate_response_payload(
+    *,
+    asset_signals: str,
+    normalized_extractions: list[dict[str, Any]],
+    build_spec: dict[str, Any],
+    agent_state: dict[str, Any],
+    planner_status: dict[str, Any],
+) -> dict[str, Any]:
+    external_failures = collect_external_failures(
+        normalized_extractions,
+        planner_status,
+    )
+    vision_mode = (
+        "unavailable"
+        if any(item.get("processing_status") != "success" for item in normalized_extractions)
+        else ("unused" if not normalized_extractions else "pollinations_vision")
+    )
+    return {
+        "source": "pollinations-agent-system",
+        "assetSignals": asset_signals,
+        "assetExtractions": normalized_extractions,
+        "buildSpec": build_spec,
+        "graphExecution": agent_state,
+        "graphStatus": {
+            "status": agent_state.get("status", "completed"),
+            "error": agent_state.get("graph_error", ""),
+        },
+        "plannerMode": planner_status.get("mode", "external_pollinations"),
+        "visionMode": vision_mode,
+        "externalFailures": external_failures,
+        "cognitive_events": [
+            (
+                event.model_dump()
+                if hasattr(event, "model_dump")
+                else event
+            )
+            for event in agent_state.get(
+                "cognitive_events",
+                [],
+            )
+        ],
+    }
+
+
+def sse_event(
+    event_name: str,
+    payload: dict[str, Any],
+) -> str:
+    return (
+        f"event: {event_name}\n"
+        f"data: {json.dumps(payload, default=str)}\n\n"
+    )
+
+
 def asset_signals_from_extractions(extractions: list[dict[str, Any]]) -> str:
     if not extractions:
         return ""
@@ -727,46 +781,159 @@ async def generate_buildspec(
                 str(graph_error),
             )
 
-        planner_status = planner.get_health_status()
-        external_failures = collect_external_failures(
-            normalized_extractions,
-            planner_status,
-        )
-        vision_mode = (
-            "unavailable"
-            if any(item.get("processing_status") != "success" for item in normalized_extractions)
-            else ("unused" if not normalized_extractions else "pollinations_vision")
-        )
-
         logger.info("Successfully processed generate_buildspec request")
-        return {
-            "source": "pollinations-agent-system",
-            "assetSignals": asset_signals,
-            "assetExtractions": normalized_extractions,
-            "buildSpec": build_spec,
-            "graphExecution": agent_state,
-            "graphStatus": {
-                "status": agent_state.get("status", "completed"),
-                "error": agent_state.get("graph_error", ""),
-            },
-            "plannerMode": planner_status.get("mode", "external_pollinations"),
-            "visionMode": vision_mode,
-            "externalFailures": external_failures,
-            "cognitive_events": [
-                (
-                    event.model_dump()
-                    if hasattr(event, "model_dump")
-                    else event
-                )
-                for event in agent_state.get(
-                    "cognitive_events",
-                    [],
-                )
-            ],
-        }
+        return build_generate_response_payload(
+            asset_signals=asset_signals,
+            normalized_extractions=normalized_extractions,
+            build_spec=build_spec,
+            agent_state=agent_state,
+            planner_status=planner.get_health_status(),
+        )
     except Exception as e:
         logger.exception(f"Error in generate_buildspec: {e}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@app.post("/generate-buildspec-stream")
+async def generate_buildspec_stream(
+    request: Request,
+    payload: str | None = Form(default=None),
+    files: list[UploadFile] | None = File(default=None),
+) -> StreamingResponse:
+    parsed_payload = await extract_request_payload(request, payload)
+    planner = ModelJsonPlanner()
+    planner.begin_request()
+
+    logger.info("Received generate_buildspec_stream request")
+    logger.debug(f"Streaming request payload: {parsed_payload}")
+
+    try:
+        profile = parsed_payload.get("business_input", {})
+
+        if not profile:
+            if "payload" in parsed_payload and isinstance(parsed_payload["payload"], dict):
+                profile = parsed_payload["payload"].get("business_input", {})
+            elif "business_input" in parsed_payload and isinstance(parsed_payload["business_input"], dict):
+                profile = parsed_payload["business_input"]
+            elif isinstance(parsed_payload, dict):
+                profile = parsed_payload
+
+        if not profile:
+            if isinstance(parsed_payload, dict) and "name" in parsed_payload and "location" in parsed_payload:
+                profile = parsed_payload
+            elif isinstance(parsed_payload, dict):
+                for key in ["business_input", "payload", "data"]:
+                    if key in parsed_payload and isinstance(parsed_payload[key], dict):
+                        profile = parsed_payload[key]
+                        break
+
+        business_details = profile.get("details", "")
+        normalized_extractions = normalize_supplied_extractions(
+            parsed_payload.get("asset_extractions")
+        )
+        if not normalized_extractions:
+            normalized_extractions = await process_uploaded_files(
+                files
+            )
+
+        asset_signals = asset_signals_from_extractions(normalized_extractions)
+        enriched_details = "\n\n".join(
+            part
+            for part in [
+                business_details,
+                asset_signals,
+            ]
+            if str(part).strip()
+        )
+        build_spec = generate_build_spec(
+            profile,
+            enriched_details,
+        )
+        initial_graph_state = {
+            "business_input": profile,
+            "uploaded_asset_paths": [item.get("image", "") for item in normalized_extractions],
+            "asset_extractions": [
+                AssetExtraction.model_validate(item)
+                for item in normalized_extractions
+            ],
+        }
+
+    except Exception as setup_error:
+        logger.exception(f"Error preparing generate_buildspec_stream: {setup_error}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(setup_error)}")
+
+    def event_stream():
+        yield sse_event(
+            "status",
+            {
+                "message": "Build spec ready. Starting live LangGraph execution.",
+            },
+        )
+        yield sse_event(
+            "buildspec",
+            {
+                "assetSignals": asset_signals,
+                "assetExtractions": normalized_extractions,
+                "buildSpec": build_spec,
+            },
+        )
+
+        try:
+            agent_state = None
+            for update in iter_agent_graph_updates(
+                initial_graph_state,
+                planner,
+            ):
+                if update.get("type") == "graph_event":
+                    yield sse_event(
+                        "graph_update",
+                        {
+                            "event": update.get("event", {}),
+                        },
+                    )
+                elif update.get("type") == "complete":
+                    agent_state = update.get("graph_execution")
+
+            if agent_state is None:
+                raise RuntimeError("graph completed without a final state")
+
+        except Exception as graph_error:
+            logger.exception(f"Streaming agent graph failed, using fallback graph execution: {graph_error}")
+            planner_status = planner.get_health_status()
+            agent_state = build_fallback_graph_execution(
+                profile,
+                normalized_extractions,
+                planner_status,
+                str(graph_error),
+            )
+            yield sse_event(
+                "graph_error",
+                {
+                    "error": str(graph_error),
+                },
+            )
+
+        planner_status = planner.get_health_status()
+        yield sse_event(
+            "complete",
+            build_generate_response_payload(
+                asset_signals=asset_signals,
+                normalized_extractions=normalized_extractions,
+                build_spec=build_spec,
+                agent_state=agent_state,
+                planner_status=planner_status,
+            ),
+        )
+        logger.info("Successfully streamed generate_buildspec request")
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/run-research")
@@ -837,6 +1004,8 @@ async def generate_code(
         if not build_spec:
             raise HTTPException(status_code=400, detail="buildSpec is required")
 
+        agent_context = parsed_payload.get("agentContext") or {}
+
         # Initialize planner if not already done
         global json_planner
         if json_planner is None:
@@ -846,7 +1015,7 @@ async def generate_code(
         code_orchestrator = CodeGenerationOrchestrator(json_planner)
 
         # Generate website code
-        generated_code = code_orchestrator.generate_website(build_spec)
+        generated_code = code_orchestrator.generate_website(build_spec, agent_context=agent_context)
 
         logger.info("Successfully generated website code")
         return {

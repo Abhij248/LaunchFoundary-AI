@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any, Optional, List
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from agentic_planner import ModelJsonPlanner, PlannerGenerationError
 
 logger = logging.getLogger(__name__)
@@ -57,10 +57,31 @@ class CritiqueReport(BaseModel):
     priority_issues: List[str] = Field(default_factory=list, description="High-priority issues")
     confidence: float = Field(ge=0.0, le=1.0, description="Confidence in critique")
 
-    @field_validator("issues", "suggestions", "priority_issues", mode="before")
+    @model_validator(mode="before")
     @classmethod
-    def _coerce_base_lists(cls, v: Any) -> list[str]:
-        return _coerce_str_list(v)
+    def _coerce_fields(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        _CONFIDENCE_MAP = {"low": 0.3, "medium": 0.5, "medium-high": 0.65, "high": 0.8, "very high": 0.95}
+        hints = {}
+        for klass in reversed(cls.__mro__):
+            hints.update(getattr(klass, "__annotations__", {}))
+        for field_name, annotation in hints.items():
+            if field_name not in data:
+                continue
+            raw_ann = str(annotation)
+            if "List" in raw_ann or "list" in raw_ann:
+                data[field_name] = _coerce_str_list(data[field_name])
+            elif field_name == "confidence":
+                v = data[field_name]
+                if isinstance(v, str):
+                    data[field_name] = _CONFIDENCE_MAP.get(v.lower().strip(), 0.5)
+            elif field_name == "score" and isinstance(data[field_name], str):
+                try:
+                    data[field_name] = int(float(data[field_name]))
+                except (ValueError, TypeError):
+                    data[field_name] = 50
+        return data
 
 
 class UXCritique(CritiqueReport):

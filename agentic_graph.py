@@ -1366,7 +1366,8 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
         try:
 
             raw = planner.generate_text(
-                prompt
+                prompt,
+                temperature=0.2,
             )
 
             parsed = parse_json_object(
@@ -1834,7 +1835,9 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
         try:
 
             raw = planner.generate_text(
-                prompt
+                prompt,
+                max_new_tokens=900,
+                temperature=0.25,
             )
 
             parsed = parse_json_object(
@@ -1970,7 +1973,8 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
         try:
 
             raw = planner.generate_text(
-                prompt
+                prompt,
+                temperature=0.7,
             )
 
             parsed = parse_json_object(
@@ -2118,6 +2122,7 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
             raw = planner.generate_text(
                 prompt,
                 max_new_tokens=700,
+                temperature=0.55,
             )
 
             parsed = parse_json_object(
@@ -2318,6 +2323,7 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
             raw = planner.generate_text(
                 prompt,
                 max_new_tokens=650,
+                temperature=0.35,
             )
 
             parsed = parse_json_object(
@@ -2522,6 +2528,7 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 planner.generate_model(
                     prompt,
                     ReflectionReport,
+                    temperature=0.25,
                 )
             )
 
@@ -2739,6 +2746,7 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 planner.generate_model(
                     prompt,
                     DebateOutcome,
+                    temperature=0.75,
                 )
             )
 
@@ -2886,6 +2894,7 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
             raw = planner.generate_text(
                 prompt,
                 max_new_tokens=520,
+                temperature=0.35,
             )
             parsed = parse_json_object(
                 raw
@@ -3162,7 +3171,8 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
         )
 
         raw = planner.generate_text(
-            prompt
+            prompt,
+            temperature=0.25,
         )
 
         try:
@@ -3726,9 +3736,17 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
             fallback=0.55,
         )
 
+        # Always do a second pass after the first design iteration for deeper exploration
+        if state.revision_iteration == 1:
+            add_reasoning_note(
+                state,
+                "First-pass reflection complete. Returning to design generation for a second refinement iteration.",
+            )
+            return "design_candidates"
+
         if (
             state.reflection_report.should_expand_exploration
-            and state.revision_iteration < 2
+            and state.revision_iteration < 3
             and reflection_conf >= 0.55
         ):
             add_reasoning_note(
@@ -3902,32 +3920,24 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
     return graph.compile()
 
 
+def _deep_serialize(value: Any) -> Any:
+    """Recursively convert pydantic models, dicts, and lists to plain JSON-safe types."""
+    if hasattr(value, "model_dump"):
+        return _deep_serialize(value.model_dump())
+    if isinstance(value, dict):
+        return {k: _deep_serialize(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_deep_serialize(item) for item in value]
+    return value
+
+
 def serialize_graph_event(
     event: dict,
 ) -> dict:
-
-    serialized = {}
-
-    for key, value in event.items():
-
-        if hasattr(value, "model_dump"):
-            serialized[key] = (
-                value.model_dump()
-            )
-
-        elif isinstance(value, list):
-
-            serialized[key] = [
-                item.model_dump()
-                if hasattr(item, "model_dump")
-                else item
-                for item in value
-            ]
-
-        else:
-            serialized[key] = value
-
-    return serialized
+    return {
+        key: _deep_serialize(value)
+        for key, value in event.items()
+    }
 
 
 def _state_cycle_signature(state: WebsiteAgentState) -> tuple:
@@ -3975,10 +3985,10 @@ def _state_cycle_signature(state: WebsiteAgentState) -> tuple:
     )
 
 
-def run_agent_graph(
+def iter_agent_graph_updates(
     initial_state: dict[str, Any],
     planner: ModelJsonPlanner,
-) -> dict[str, Any]:
+):
 
     state = WebsiteAgentState(
         **initial_state
@@ -4087,6 +4097,11 @@ def run_agent_graph(
 
         final_state = current_state
 
+        yield {
+            "type": "graph_event",
+            "event": serialized,
+        }
+
         checkpoint_nodes = {
             "simulation",
             "design_candidates",
@@ -4160,19 +4175,22 @@ def run_agent_graph(
             }
         )
 
-        return {
-            "final_state":
-                validated.model_dump(),
+        yield {
+            "type": "complete",
+            "graph_execution": {
+                "final_state":
+                    validated.model_dump(),
 
-            "events":
-                events,
+                "events":
+                    events,
 
-            "debug": {
-                "execution_trace":
-                    validated.execution_trace,
+                "debug": {
+                    "execution_trace":
+                        validated.execution_trace,
 
-                "node_visit_counts":
-                    validated.node_visit_counts,
+                    "node_visit_counts":
+                        validated.node_visit_counts,
+                },
             },
         }
 
@@ -4181,6 +4199,28 @@ def run_agent_graph(
         raise RuntimeError(
             f"graph returned invalid state: {exc}"
         ) from exc
+
+
+def run_agent_graph(
+    initial_state: dict[str, Any],
+    planner: ModelJsonPlanner,
+) -> dict[str, Any]:
+    graph_execution = None
+    for update in iter_agent_graph_updates(
+        initial_state,
+        planner,
+    ):
+        if update.get("type") == "complete":
+            graph_execution = update.get(
+                "graph_execution"
+            )
+
+    if graph_execution is None:
+        raise RuntimeError(
+            "graph completed without a final state"
+        )
+
+    return graph_execution
 
 
 
@@ -4440,6 +4480,9 @@ def build_strategy_prompt(
         Workflow constraints tool:
         {tool_context.get("workflow_constraints", {})}
 
+        Market research tool:
+        {tool_context.get("market_research", {})}
+
         Asset evidence tool:
         {tool_context.get("asset_evidence", {})}
 
@@ -4535,14 +4578,23 @@ def build_design_candidates_prompt(
         # Strategy landscape tool:
         # {tool_context.get("strategy_landscape", {})}
 
-        # Memory guidance tool:
-        # {tool_context.get("memory_guidance", {})}
+        Market research tool:
+        {tool_context.get("market_research", {})}
+
+        Page reader tool:
+        {tool_context.get("page_reader", {})}
+
+        Design quality tool:
+        {tool_context.get("design_quality", {})}
+
+        Memory guidance tool:
+        {tool_context.get("memory_guidance", {})}
 
         # Previous critique history:
         # {compact_history(state.critique_history)}
 
-        # Asset evidence tool:
-        # {tool_context.get("asset_evidence", {})}
+        Asset evidence tool:
+        {tool_context.get("asset_evidence", {})}
 
         # # Process health tool:
         # # {tool_context.get("process_health", {})}
@@ -4582,6 +4634,15 @@ def build_design_candidates_prompt(
         - section sequencing must be
           strategically justified,
           not aesthetically justified
+
+        - visual quality must be concrete:
+          use real asset evidence, strong hierarchy,
+          clear product/menu cards, meaningful trust
+          blocks, and obvious action paths
+
+        - avoid customer-facing text about
+          agents, planners, candidate reasoning,
+          backend modules, or internal strategy
 
         - keep copy concise
 
@@ -4707,6 +4768,15 @@ def build_critique_prompt(
 
         # Candidate landscape tool:
         # {tool_context.get("candidate_landscape", {})}
+
+        Market research tool:
+        {tool_context.get("market_research", {})}
+
+        Page reader tool:
+        {tool_context.get("page_reader", {})}
+
+        Design quality tool:
+        {tool_context.get("design_quality", {})}
 
         # Memory guidance tool:
         # {tool_context.get("memory_guidance", {})}
@@ -4858,6 +4928,15 @@ def build_revision_prompt(
 
         Critique landscape tool:
         {tool_context.get("critique_landscape", {})}
+
+        Market research tool:
+        {tool_context.get("market_research", {})}
+
+        Page reader tool:
+        {tool_context.get("page_reader", {})}
+
+        Design quality tool:
+        {tool_context.get("design_quality", {})}
 
         Memory guidance tool:
         {tool_context.get("memory_guidance", {})}
@@ -5051,6 +5130,12 @@ def build_debate_prompt(
         # Critique landscape tool:
         # {tool_context.get("critique_landscape", {})}
 
+        Market research tool:
+        {tool_context.get("market_research", {})}
+
+        Design quality tool:
+        {tool_context.get("design_quality", {})}
+
         # Memory guidance tool:
         # {tool_context.get("memory_guidance", {})}
 
@@ -5110,6 +5195,12 @@ def build_simulation_prompt(
 
         # Critique landscape tool:
         # {tool_context.get("critique_landscape", {})}
+
+        Page reader tool:
+        {tool_context.get("page_reader", {})}
+
+        Design quality tool:
+        {tool_context.get("design_quality", {})}
 
         # Process health tool:
         # {tool_context.get("process_health", {})}

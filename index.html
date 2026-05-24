@@ -12,7 +12,7 @@
         <div class="brand">
           <div class="brand-mark">LF</div>
           <div>
-            <p class="eyebrow">AMD Hackathon MVP</p>
+            <p class="eyebrow">Powered by Pollinations AI</p>
             <h1>LaunchFoundry AI</h1>
           </div>
         </div>
@@ -23,13 +23,12 @@
           <button class="step" data-target="website">4. Website</button>
           <button class="step" data-target="admin">5. Admin</button>
           <button class="step" data-target="qa">6. QA</button>
-          <button class="step" data-target="amd">7. AMD Proof</button>
         </nav>
         <section class="amd-panel">
-          <p class="eyebrow">AMD GPU Role</p>
+          <p class="eyebrow">AI Stack</p>
           <p>
-            AMD Developer Cloud powers inference for business understanding, build-spec generation,
-            and multimodal intake. The local app demonstrates the product workflow.
+            Pollinations AI powers vision extraction, LLM inference, and business understanding.
+            Research agents run competitor analysis, local SEO, and menu extraction.
           </p>
         </section>
       </aside>
@@ -116,17 +115,13 @@
               <h4>Business Assets</h4>
               <p>Upload menus, brochures, flyers, storefront photos, service lists, or anything useful.</p>
             </div>
-            <label>
-              AMD inference API URL
-              <input id="amdApiUrl" value="auto" />
-            </label>
             <label class="file-drop">
               <span>Select relevant images</span>
               <input id="businessAssets" type="file" accept="image/*" multiple />
             </label>
             <div id="assetPreview" class="asset-preview"></div>
             <div class="action-row">
-              <button id="runAmdAssets" class="primary-button">Generate With AMD</button>
+              <button id="runAmdAssets" class="primary-button">Extract &amp; Build Site</button>
               <button id="extractAssets" class="ghost-button">Extract Asset Info</button>
               <button id="clearAssets" class="ghost-button">Clear Assets</button>
             </div>
@@ -147,6 +142,62 @@
             <p>Visible decisions make the system feel reliable.</p>
           </div>
           <div id="graphStatusBanner"></div>
+
+          <div class="graph-panel">
+            <div class="graph-header">Live Pipeline Execution</div>
+            <div class="graph-flow">
+              <div class="graph-node" data-node="business_profile">
+                <span class="gn-num">1</span>
+                <span class="gn-label">Profile</span>
+              </div>
+              <div class="graph-arrow">&#8594;</div>
+              <div class="graph-node" data-node="memory_retrieval">
+                <span class="gn-num">2</span>
+                <span class="gn-label">Memory</span>
+              </div>
+              <div class="graph-arrow">&#8594;</div>
+              <div class="graph-node" data-node="requirements">
+                <span class="gn-num">3</span>
+                <span class="gn-label">Requirements</span>
+              </div>
+              <div class="graph-arrow">&#8594;</div>
+              <div class="graph-node" data-node="strategy_hypotheses">
+                <span class="gn-num">4</span>
+                <span class="gn-label">Strategy</span>
+              </div>
+              <div class="graph-arrow">&#8594;</div>
+              <div class="graph-node" data-node="design_candidates">
+                <span class="gn-num">5</span>
+                <span class="gn-label">Design</span>
+              </div>
+              <div class="graph-arrow">&#8594;</div>
+              <div class="graph-node" data-node="critique">
+                <span class="gn-num">6</span>
+                <span class="gn-label">Critique</span>
+              </div>
+              <div class="graph-arrow">&#8594;</div>
+              <div class="graph-node" data-node="reflection">
+                <span class="gn-num">7</span>
+                <span class="gn-label">Reflection</span>
+              </div>
+              <div class="graph-arrow">&#8594;</div>
+              <div class="graph-node" data-node="debate">
+                <span class="gn-num">8</span>
+                <span class="gn-label">Debate</span>
+              </div>
+              <div class="graph-arrow">&#8594;</div>
+              <div class="graph-node" data-node="simulation">
+                <span class="gn-num">9</span>
+                <span class="gn-label">Simulation</span>
+              </div>
+              <div class="graph-arrow">&#8594;</div>
+              <div class="graph-node" data-node="revise">
+                <span class="gn-num">10</span>
+                <span class="gn-label">Revision</span>
+              </div>
+            </div>
+          </div>
+
           <div id="timeline" class="timeline"></div>
 
           <div class="cognition-panel">
@@ -213,96 +264,6 @@
               <span class="research-tag">Competitor · Local SEO · Menu/Service</span>
             </div>
             <div id="researchContent" class="research-content"></div>
-          </div>
-          <div class="graph-panel">
-
-            <div class="graph-header">
-              Cognitive Graph Execution
-            </div>
-
-            <div class="graph-flow">
-
-              <div
-                class="graph-node"
-                data-node="business_profile"
-              >
-                Business Profile
-              </div>
-
-              <div class="graph-arrow">↓</div>
-
-              <div
-                class="graph-node"
-                data-node="requirements"
-              >
-                Requirements
-              </div>
-
-              <div class="graph-arrow">↓</div>
-
-              <div
-                class="graph-node"
-                data-node="strategy_hypotheses"
-              >
-                Strategy
-              </div>
-
-              <div class="graph-arrow">↓</div>
-
-              <div
-                class="graph-node"
-                data-node="design_candidates"
-              >
-                Design
-              </div>
-
-              <div class="graph-arrow">↓</div>
-
-              <div
-                class="graph-node"
-                data-node="critique"
-              >
-                Critique
-              </div>
-
-              <div class="graph-arrow">↓</div>
-
-              <div
-                class="graph-node"
-                data-node="reflection"
-              >
-                Reflection
-              </div>
-
-              <div class="graph-arrow">↓</div>
-
-              <div
-                class="graph-node"
-                data-node="debate"
-              >
-                Debate
-              </div>
-
-              <div class="graph-arrow">↓</div>
-
-              <div
-                class="graph-node"
-                data-node="simulation"
-              >
-                Simulation
-              </div>
-
-              <div class="graph-arrow">↓</div>
-
-              <div
-                class="graph-node"
-                data-node="revise"
-              >
-                Revision
-              </div>
-
-            </div>
-
           </div>
         </section>
 
@@ -386,32 +347,32 @@
 
         <section id="amd" class="panel">
           <div class="section-title">
-            <h3>AMD Inference Proof</h3>
-            <p>Paste a BuildSpec generated in AMD Jupyter to drive the same product flow.</p>
+            <h3>Import BuildSpec</h3>
+            <p>Paste or load a BuildSpec JSON to drive the full product flow.</p>
           </div>
           <div class="amd-proof-grid">
             <section>
-              <h4>Notebook Steps</h4>
+              <h4>How it works</h4>
               <ol class="checklist">
-                <li>Run `rocm-smi` and PyTorch GPU check.</li>
-                <li>Generate a BuildSpec with Qwen or the fallback planner.</li>
-                <li>Copy the JSON output from the notebook.</li>
-                <li>Paste it here and apply it to the local app.</li>
+                <li>Fill in the Business Intake form and upload assets.</li>
+                <li>Click <strong>Extract &amp; Build Site</strong> — Pollinations extracts signals.</li>
+                <li>The pipeline generates your BuildSpec, research, and website preview.</li>
+                <li>Or paste an existing BuildSpec JSON below to apply it directly.</li>
               </ol>
               <div id="amdStatus" class="status-box">
-                Local deterministic planner is active. AMD-generated spec not imported yet.
+                Pollinations AI is active. Fill the intake form or paste a BuildSpec to begin.
               </div>
             </section>
             <section>
-              <h4>Import AMD BuildSpec JSON</h4>
+              <h4>Import BuildSpec JSON</h4>
               <label class="file-drop">
                 <span>Select BuildSpec JSON file</span>
                 <input id="amdSpecFile" type="file" accept="application/json,.json" />
               </label>
-              <textarea id="amdSpecInput" class="amd-spec-input" placeholder='Paste BuildSpec JSON from AMD Jupyter here'></textarea>
+              <textarea id="amdSpecInput" class="amd-spec-input" placeholder='Paste BuildSpec JSON here'></textarea>
               <div class="action-row">
-                <button id="applyAmdSpec" class="primary-button">Apply AMD Spec</button>
-                <button id="loadLatestAmdResult" class="ghost-button">Load Latest AMD Result</button>
+                <button id="applyAmdSpec" class="primary-button">Apply Spec</button>
+                <button id="loadLatestAmdResult" class="ghost-button">Load Latest Result</button>
                 <button id="loadCurrentSpec" class="ghost-button">Load Current Spec</button>
               </div>
             </section>
