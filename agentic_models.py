@@ -231,6 +231,8 @@ class PageType(str, Enum):
     BOOKING = "booking"
     ABOUT = "about"
     CONTACT = "contact"
+    PORTFOLIO = "portfolio"
+    PRICING = "pricing"
 
 
 class SectionType(str, Enum):
@@ -278,31 +280,56 @@ class AssetExtraction(BaseModel):
     planner_notes: str = ""
 
 
+def normalize_vertical_value(value: Any) -> str:
+    if isinstance(value, Enum):
+        # Vertical mixes in str, but plain `class X(str, Enum)` still uses
+        # Enum's default __str__ ("Vertical.CAFE"), not the string value —
+        # extract .value explicitly rather than relying on str(value).
+        value = value.value
+    text = str(value or "").strip().lower().replace(" ", "_").replace("-", "_")
+    return text or Vertical.UNKNOWN.value
+
+
 class BusinessProfile(BaseModel):
     name: str
     location: str
     goal: str
-    vertical: Vertical
+    vertical: str
     subtype: str
     risk_level: RiskLevel
     audience: list[str] = Field(default_factory=list)
     evidence_summary: list[str] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)
+
+    @field_validator("vertical", mode="before")
+    @classmethod
+    def _normalize_vertical(cls, value: Any) -> str:
+        return normalize_vertical_value(value)
 
 
 class BusinessProfileInference(BaseModel):
-    
-    vertical: Vertical
+
+    vertical: str
     subtype: str
     risk_level: RiskLevel
     audience: list[str] = Field(default_factory=list)
     evidence_summary: list[str] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)
+
+    @field_validator("vertical", mode="before")
+    @classmethod
+    def _normalize_vertical(cls, value: Any) -> str:
+        return normalize_vertical_value(value)
 
 class CanonicalBusinessIdentity(
     BaseModel
 ):
-    vertical: Vertical
+    vertical: str
+
+    @field_validator("vertical", mode="before")
+    @classmethod
+    def _normalize_vertical(cls, value: Any) -> str:
+        return normalize_vertical_value(value)
 
     subtype: str
 
@@ -355,6 +382,10 @@ class VisualSystemSpec(BaseModel):
     density: VisualDensity
     media_bias: MediaBias
     trust_emphasis: Literal["low", "medium", "high"]
+    primary_color: str = "#0d7c66"
+    accent_color: str = "#d99b28"
+    surface_color: str = "#f7faf8"
+    font_family: str = "Inter"
 
 
 class SectionSpec(BaseModel):
@@ -599,6 +630,10 @@ class WebsiteAgentState(BaseModel):
     retrieved_memories: list[RetrievedMemory] = Field(default_factory=list)
     tool_invocations: list["ToolInvocationRecord"] = Field(default_factory=list)
     tool_cache: dict[str, Any] = Field(default_factory=dict)
+    human_answers: dict[str, str] = Field(default_factory=dict)
+    human_input_required: bool = False
+    pending_clarification_questions: list[ClarificationQuestion] = Field(default_factory=list)
+    resume_from_node: str | None = None
 
 class BehavioralArchetypeWeight(
     BaseModel

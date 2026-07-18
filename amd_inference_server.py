@@ -6,6 +6,7 @@ import logging
 import mimetypes
 import os
 import re
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from agentic_graph import iter_agent_graph_updates, run_agent_graph
+from agentic_graph import HumanInputRequired, iter_agent_graph_updates, run_agent_graph
 from agentic_models import (
     AssetExtraction,
     CognitiveProvenanceRecord,
@@ -23,7 +24,7 @@ from agentic_models import (
     ReasoningLineageEntry,
     StateArtifactStatus,
 )
-from agentic_planner import ModelJsonPlanner
+from agentic_planner import ModelJsonPlanner, get_vision_config
 from buildspec_planner import generate_build_spec
 from research_agents import ResearchOrchestrator
 from code_generator import CodeGenerationOrchestrator
@@ -35,10 +36,12 @@ logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler("debug.log"),
+        RotatingFileHandler("debug.log", maxBytes=10 * 1024 * 1024, backupCount=3, encoding="utf-8"),
         logging.StreamHandler(),
     ],
 )
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="LaunchFoundry AMD Inference API")
@@ -70,18 +73,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-POLLINATIONS_VISION_URL = "https://gen.pollinations.ai/v1/chat/completions"
-POLLINATIONS_VISION_MODEL = os.getenv("POLLINATIONS_VISION_MODEL", os.getenv("pollinations_vision_model", "openai-large"))
-POLLINATIONS_API_KEY = os.getenv("POLLINATIONS_API_KEY", os.getenv("pollinations_api_key", ""))
 json_planner = None
 
 app.mount("/static", StaticFiles(directory=APP_DIR), name="static")
 
 
 async def process_image_with_pollinations(image_data: bytes, filename: str) -> dict[str, Any]:
-    """Process an image using Pollinations chat-completions vision."""
+    """Process an image using the active provider's chat-completions vision endpoint."""
+    provider, vision_url, vision_model, api_key = get_vision_config()
     try:
-        logger.debug(f"Processing image: {filename}")
+        logger.debug(f"Processing image via {provider}: {filename}")
         async with httpx.AsyncClient() as client:
             mime_type = (
                 mimetypes.guess_type(filename)[0]
@@ -92,11 +93,11 @@ async def process_image_with_pollinations(image_data: bytes, filename: str) -> d
             headers = {
                 "Content-Type": "application/json",
             }
-            if POLLINATIONS_API_KEY:
-                headers["Authorization"] = f"Bearer {POLLINATIONS_API_KEY}"
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
 
             payload = {
-                "model": POLLINATIONS_VISION_MODEL,
+                "model": vision_model,
                 "messages": [
                     {
                         "role": "user",
@@ -122,9 +123,9 @@ async def process_image_with_pollinations(image_data: bytes, filename: str) -> d
                 ],
             }
 
-            logger.debug(f"Sending request to pollinations API for {filename}")
+            logger.debug(f"Sending request to {provider} vision API for {filename}")
             response = await client.post(
-                POLLINATIONS_VISION_URL,
+                vision_url,
                 headers=headers,
                 json=payload,
                 timeout=30.0,
@@ -150,7 +151,7 @@ async def process_image_with_pollinations(image_data: bytes, filename: str) -> d
 
             error_text = response.text
             logger.error(
-                f"Pollinations API error for {filename}: Status {response.status_code}, Response: {error_text}"
+                f"{provider} vision API error for {filename}: Status {response.status_code}, Response: {error_text}"
             )
             return {
                 "image": filename,
@@ -227,7 +228,7 @@ def startup() -> None:
 
     json_planner = ModelJsonPlanner()
 
-    logger.info("Pollinations.ai vision model ready.")
+    logger.info(f"{json_planner.provider} model ready.")
 
 
 @app.get("/health")
@@ -285,7 +286,7 @@ def normalize_asset_extraction_payload(item: dict[str, Any]) -> dict[str, Any]:
                 "visual_brand_cues": [],
                 "planner_notes": error_message,
                 "external_failure": {
-                    "service": "pollinations_vision",
+                    "service": f"{get_vision_config()[0]}_vision",
                     "status": status,
                     "error": error_message,
                     "error_code": str(item.get("error_code") or "unknown"),
@@ -520,13 +521,14 @@ def build_generate_response_payload(
         normalized_extractions,
         planner_status,
     )
+    active_provider = get_vision_config()[0]
     vision_mode = (
         "unavailable"
         if any(item.get("processing_status") != "success" for item in normalized_extractions)
-        else ("unused" if not normalized_extractions else "pollinations_vision")
+        else ("unused" if not normalized_extractions else f"{active_provider}_vision")
     )
     return {
-        "source": "pollinations-agent-system",
+        "source": f"{active_provider}-agent-system",
         "assetSignals": asset_signals,
         "assetExtractions": normalized_extractions,
         "buildSpec": build_spec,
@@ -535,7 +537,7 @@ def build_generate_response_payload(
             "status": agent_state.get("status", "completed"),
             "error": agent_state.get("graph_error", ""),
         },
-        "plannerMode": planner_status.get("mode", "external_pollinations"),
+        "plannerMode": planner_status.get("mode", f"external_{active_provider}"),
         "visionMode": vision_mode,
         "externalFailures": external_failures,
         "cognitive_events": [
@@ -637,10 +639,11 @@ def collect_external_failures(
                     **failure,
                 }
             )
+    planner_provider = str(planner_status.get("mode", "external_unknown")).replace("external_", "")
     for error in planner_status.get("errors", []):
         failures.append(
             {
-                "service": "pollinations_generate",
+                "service": f"{planner_provider}_generate",
                 "status": "error",
                 "error": error,
             }
@@ -763,6 +766,7 @@ async def generate_buildspec(
             agent_state = run_agent_graph(
                 {
                     "business_input": profile,
+                    "human_answers": parsed_payload.get("human_answers") or {},
                     "uploaded_asset_paths": [item.get("image", "") for item in normalized_extractions],
                     "asset_extractions": [
                         AssetExtraction.model_validate(item)
@@ -849,14 +853,21 @@ async def generate_buildspec_stream(
             profile,
             enriched_details,
         )
-        initial_graph_state = {
+        resume_state = parsed_payload.get("resume_state")
+        initial_graph_state = (
+            resume_state
+            if isinstance(resume_state, dict)
+            else {}
+        )
+        initial_graph_state.update({
             "business_input": profile,
+            "human_answers": parsed_payload.get("human_answers") or {},
             "uploaded_asset_paths": [item.get("image", "") for item in normalized_extractions],
             "asset_extractions": [
                 AssetExtraction.model_validate(item)
                 for item in normalized_extractions
             ],
-        }
+        })
 
     except Exception as setup_error:
         logger.exception(f"Error preparing generate_buildspec_stream: {setup_error}")
@@ -896,6 +907,25 @@ async def generate_buildspec_stream(
 
             if agent_state is None:
                 raise RuntimeError("graph completed without a final state")
+
+        except HumanInputRequired as human_pause:
+            resume_state = (
+                human_pause.state.model_dump()
+                if human_pause.state is not None
+                else None
+            )
+            yield sse_event(
+                "human_input_required",
+                {
+                    "questions": [
+                        question.model_dump()
+                        for question in human_pause.questions
+                    ],
+                    "resume_state": resume_state,
+                    "message": "The planner needs clarification before continuing.",
+                },
+            )
+            return
 
         except Exception as graph_error:
             logger.exception(f"Streaming agent graph failed, using fallback graph execution: {graph_error}")
@@ -1147,14 +1177,15 @@ async def extract_assets(
         normalized_extractions,
         planner_status,
     )
+    active_provider = get_vision_config()[0]
     vision_mode = (
         "unavailable"
         if any(item.get("processing_status") != "success" for item in normalized_extractions)
-        else ("unused" if not normalized_extractions else "pollinations_vision")
+        else ("unused" if not normalized_extractions else f"{active_provider}_vision")
     )
 
     return {
-        "source": "pollinations-vision-extraction",
+        "source": f"{active_provider}-vision-extraction",
         "assetSignals": asset_signals,
         "assetExtractions": normalized_extractions,
         "visionMode": vision_mode,

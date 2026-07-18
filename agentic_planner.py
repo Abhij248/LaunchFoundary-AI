@@ -64,36 +64,101 @@ def clamp_temperature(
     )
 
 
+PROVIDER_CONFIG = {
+    "xai": {
+        "url": "https://api.x.ai/v1/chat/completions",
+        "key_env": ("XAI_API_KEY", "xai_api_key"),
+        "model_env": ("XAI_TEXT_MODEL", "xai_text_model"),
+        "default_model": "grok-code-fast-1",
+        "best_model_env": ("XAI_BEST_MODEL", "xai_best_model"),
+        # grok-4.5 is flagship but reasoning-heavy — it burned its entire
+        # completion budget on hidden reasoning tokens and still hit the
+        # length cap mid-CSS on a real generation run (finish_reason:
+        # "length" at 16000 tokens). grok-4.20-0309-non-reasoning is also
+        # flagship-tier, spends 0 tokens on hidden reasoning, and completed
+        # the same class of long-form HTML/CSS/JS generation naturally
+        # (finish_reason: "stop") well under budget — more reliable for a
+        # single large-output generation task like this one.
+        "default_best_model": "grok-4.20-0309-non-reasoning",
+        "vision_model_env": ("XAI_VISION_MODEL", "xai_vision_model"),
+        "default_vision_model": "grok-4.20-0309-non-reasoning",
+    },
+    "pollinations": {
+        "url": "https://gen.pollinations.ai/v1/chat/completions",
+        "key_env": ("POLLINATIONS_API_KEY", "pollinations_api_key"),
+        "model_env": ("POLLINATIONS_TEXT_MODEL", "pollinations_text_model"),
+        "default_model": "openai-large",
+        "vision_model_env": ("POLLINATIONS_VISION_MODEL", "pollinations_vision_model"),
+        "default_vision_model": "openai-large",
+    },
+}
+
+
+def get_active_provider() -> str:
+    default_provider = (
+        "xai"
+        if os.getenv("XAI_API_KEY", os.getenv("xai_api_key", ""))
+        else "pollinations"
+    )
+
+    provider = os.getenv(
+        "LLM_PROVIDER",
+        os.getenv("llm_provider", default_provider),
+    ).strip().lower()
+
+    if provider not in PROVIDER_CONFIG:
+        provider = default_provider
+
+    return provider
+
+
+def get_vision_config() -> tuple[str, str, str, str]:
+    """Return (provider, url, model, api_key) for the active vision backend."""
+
+    provider = get_active_provider()
+    config = PROVIDER_CONFIG[provider]
+
+    key_env, legacy_key_env = config["key_env"]
+    api_key = os.getenv(key_env, os.getenv(legacy_key_env, ""))
+
+    model_env, legacy_model_env = config["vision_model_env"]
+    model = (
+        os.getenv(model_env, os.getenv(legacy_model_env, "")).strip()
+        or config["default_vision_model"]
+    )
+
+    return provider, config["url"], model, api_key
+
+
 class ModelJsonPlanner:
 
     def __init__(
         self,
-        model_name: str = "openai-large",
+        model_name: str | None = None,
     ) -> None:
 
-        self.pollinations_url = (
-            "https://gen.pollinations.ai/v1/chat/completions"
-        )
+        self.provider = get_active_provider()
 
+        config = PROVIDER_CONFIG[self.provider]
+
+        self.pollinations_url = config["url"]
+
+        primary_key_env, legacy_key_env = config["key_env"]
         self.api_key = os.getenv(
-            "POLLINATIONS_API_KEY",
-            os.getenv(
-                "pollinations_api_key",
-                "",
-            ),
+            primary_key_env,
+            os.getenv(legacy_key_env, ""),
         )
 
+        primary_model_env, legacy_model_env = config["model_env"]
         configured_model = os.getenv(
-            "POLLINATIONS_TEXT_MODEL",
-            os.getenv(
-                "pollinations_text_model",
-                "",
-            ),
+            primary_model_env,
+            os.getenv(legacy_model_env, ""),
         ).strip()
 
         self.model_name = (
             configured_model
             or model_name
+            or config["default_model"]
         )
 
         self.failure_count = 0
@@ -138,7 +203,7 @@ class ModelJsonPlanner:
     ) -> dict[str, Any]:
 
         return {
-            "mode": "external_pollinations",
+            "mode": f"external_{self.provider}",
             "failure_count": (
                 self.failure_count
             ),
@@ -221,11 +286,23 @@ class ModelJsonPlanner:
                 retry_parsed
             )
 
+    def best_model_name(self) -> str:
+        config = PROVIDER_CONFIG[self.provider]
+        model_env, legacy_model_env = config.get("best_model_env", (None, None))
+        configured = (
+            os.getenv(model_env, os.getenv(legacy_model_env, ""))
+            if model_env
+            else ""
+        ).strip()
+        return configured or config.get("default_best_model") or self.model_name
+
     def generate_text(
         self,
         prompt: str,
         max_new_tokens: int = 500,
         temperature: float | None = None,
+        model: str | None = None,
+        timeout: float = 60.0,
     ) -> str:
         request_temperature = clamp_temperature(
             self.default_temperature
@@ -245,7 +322,7 @@ class ModelJsonPlanner:
                         self.pollinations_url,
                         headers=headers,
                         json={
-                            "model": self.model_name,
+                            "model": model or self.model_name,
                             "messages": [
                                 {
                                     "role": "user",
@@ -260,7 +337,7 @@ class ModelJsonPlanner:
                             "temperature": request_temperature,
                             "max_tokens": max_new_tokens,
                         },
-                        timeout=60.0
+                        timeout=timeout
                     )
                     response.raise_for_status()
                     result = response.json()
@@ -283,12 +360,12 @@ class ModelJsonPlanner:
         if last_error is not None:
 
             self.register_failure(
-                "pollinations_generate",
+                f"{self.provider}_generate",
                 last_error,
             )
 
         raise PlannerGenerationError(
-            f"Pollinations API error: "
+            f"{self.provider} API error: "
             f"{last_error}"
         )
 

@@ -196,6 +196,7 @@ class UXCritiqueAgent(CritiqueAgent):
             return UXCritique(
                 agent_name=self.agent_name,
                 score=50,
+                confidence=0.2,
                 issues=["Unable to perform full UX critique"],
                 suggestions=["Manual UX review recommended"]
             )
@@ -239,6 +240,7 @@ class AccessibilityCritiqueAgent(CritiqueAgent):
             return AccessibilityCritique(
                 agent_name=self.agent_name,
                 score=50,
+                confidence=0.2,
                 issues=["Unable to perform full accessibility critique"],
                 suggestions=["Manual accessibility audit recommended"],
                 wcag_compliance="unknown"
@@ -288,6 +290,7 @@ class ConversionCritiqueAgent(CritiqueAgent):
             return ConversionCritique(
                 agent_name=self.agent_name,
                 score=50,
+                confidence=0.2,
                 issues=["Unable to perform full conversion critique"],
                 suggestions=["Manual conversion review recommended"]
             )
@@ -331,6 +334,7 @@ class SecurityCritiqueAgent(CritiqueAgent):
             return SecurityCritique(
                 agent_name=self.agent_name,
                 score=50,
+                confidence=0.2,
                 issues=["Unable to perform full security critique"],
                 suggestions=["Manual security audit recommended"]
             )
@@ -374,6 +378,7 @@ class PerformanceCritiqueAgent(CritiqueAgent):
             return PerformanceCritique(
                 agent_name=self.agent_name,
                 score=50,
+                confidence=0.2,
                 issues=["Unable to perform full performance critique"],
                 suggestions=["Manual performance audit recommended"]
             )

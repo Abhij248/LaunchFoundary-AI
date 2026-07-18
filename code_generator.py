@@ -9,10 +9,150 @@ Generates website code using a hybrid approach:
 
 from __future__ import annotations
 import logging
+import re
 from typing import Any, Optional
 from pathlib import Path
 from pydantic import BaseModel, Field
 from agentic_planner import ModelJsonPlanner, PlannerGenerationError
+
+
+COMMERCE_COPY_BUCKETS: dict[str, Any] = {
+    "ticketed_event": {
+        "keywords": ["theat", "cinema", "movie", "concert", "showtime", "screening", "box office", "ticket"],
+        "items_heading": "Tickets & Concessions",
+        "items_subtext": "Select your tickets and snacks below",
+        "cta": "Buy Tickets",
+        "overview_heading": "Tickets, Snacks & Showtimes",
+        "overview_subtext": "A quick way to pick a showtime, grab tickets, and order snacks ahead.",
+        "default_emoji": "🎟️",
+        "emoji_map": [
+            (["popcorn"], "🍿"), (["soda", "drink", "cola", "juice"], "🥤"),
+            (["nacho"], "🧀"), (["candy", "chocolate", "sweet"], "🍬"),
+            (["adult", "child", "senior", "matinee", "ticket"], "🎟️"),
+        ],
+        "description_fallback": "",
+        "item_category_map": [
+            (["adult", "child", "senior", "matinee", "ticket"], "Tickets"),
+        ],
+        "default_item_category": "Snacks",
+    },
+    "food": {
+        "keywords": ["restaurant", "cafe", "bakery", "food", "kitchen", "diner", "pizzeria"],
+        "items_heading": "Our Menu",
+        "items_subtext": "Tap any item to add it to your order",
+        "cta": "Order Now",
+        "overview_heading": "Order, Reserve, Enjoy",
+        "overview_subtext": "A smoother way to browse the menu, place an order, or plan a visit.",
+        "default_emoji": "🍴",
+        "emoji_map": [
+            (["burger", "sandwich"], "🍔"), (["pizza"], "🍕"), (["fries", "chips"], "🍟"),
+            (["steak", "meat", "grill"], "🥩"), (["breakfast", "egg", "waffle"], "🍳"),
+            (["pasta", "noodle"], "🍝"), (["beverage", "drink", "juice", "coffee", "tea"], "🥤"),
+            (["salad", "lunch"], "🥗"), (["soup", "curry", "stew"], "🍲"),
+            (["chicken", "wings"], "🍗"), (["fish", "seafood", "shrimp"], "🐟"),
+            (["cake", "dessert", "sweet", "ice cream"], "🍰"), (["dinner"], "🍽️"),
+            (["wrap", "taco", "burrito"], "🌯"), (["donut", "pancake"], "🥞"),
+        ],
+        "description_fallback": "Freshly prepared {name}.",
+        "item_category_map": [],
+        "default_item_category": "Popular",
+    },
+    "catalog": {
+        "keywords": ["library", "librarian", "book lending", "borrow", "lending", "loan program", "rental", "equipment rental", "reserve a copy", "hold a copy", "waitlist", "checkout a book"],
+        "items_heading": "Browse Our Catalog",
+        "items_subtext": "Reserve an item to pick up or borrow",
+        "cta": "Reserve",
+        "overview_heading": "Browse, Reserve, Pick Up",
+        "overview_subtext": "A simple way to check availability and place a hold.",
+        "default_emoji": "📚",
+        "emoji_map": [
+            (["book", "novel"], "📖"), (["dvd", "movie", "film"], "🎬"),
+            (["tool", "equipment"], "🔧"), (["game"], "🎮"),
+        ],
+        "description_fallback": "",
+        "item_category_map": [],
+        "default_item_category": "Catalog",
+    },
+    "retail": {
+        "keywords": [],
+        "items_heading": "Shop",
+        "items_subtext": "Browse our products and add them to your cart",
+        "cta": "Shop Now",
+        "overview_heading": "Shop With Ease",
+        "overview_subtext": "A simple way to browse the catalog and check out.",
+        "default_emoji": "🛍️",
+        "emoji_map": [],
+        "description_fallback": "",
+        "item_category_map": [],
+        "default_item_category": "Popular",
+    },
+}
+
+
+def commerce_copy(shape: str, *text_fields: str) -> dict[str, str]:
+    """Copy for the browsable items/cart section AND the services overview
+    section, keyed on whatever business text is available (vertical, goal,
+    USPs) rather than a binary food/non-food flag — otherwise a theatre, an
+    e-commerce store, and a restaurant all get branded identically as "Our
+    Menu" just because they share the storefront_commerce shape and the
+    online_ordering feature. Checking goal/USP text (not just `vertical`)
+    matters because the deterministic classifier only recognizes 8 verticals
+    and returns "unknown" for a theatre — the goal text ("sell more tickets")
+    is often the only surviving signal at this point in the pipeline.
+
+    `shape` is checked first as a direct shortcut for business_shape values
+    that map unambiguously onto one bucket (catalog_reserve -> catalog) —
+    business_shape was classified from the FULL raw business description,
+    which this function otherwise never sees (only vertical/subtype/goal/usp),
+    so it can catch cases the keyword scan below would miss entirely."""
+    if shape == "catalog_reserve":
+        return COMMERCE_COPY_BUCKETS["catalog"]
+    v = " ".join(str(f) for f in text_fields if f).lower()
+    for bucket in (COMMERCE_COPY_BUCKETS["ticketed_event"], COMMERCE_COPY_BUCKETS["catalog"], COMMERCE_COPY_BUCKETS["food"]):
+        # NOTE: keywords is a list of whole phrases (some multi-word, e.g.
+        # "reserve a copy") checked as substrings directly — do NOT
+        # `.split()` this into individual words, that previously produced a
+        # garbage single-letter token ("a") that substring-matched almost
+        # any text, making the wrong bucket win by default.
+        if any(phrase in v for phrase in bucket["keywords"]):
+            return bucket
+    return COMMERCE_COPY_BUCKETS["retail"]
+
+
+def parse_items_from_human_answers(human_answers: dict[str, Any], currency_sym: str) -> list[dict[str, Any]]:
+    """Extract real item/price pairs directly from clarification-question
+    answers (e.g. "Popcorn $5, Nachos $6") instead of ever fabricating
+    business-specific placeholder content like fake menu items."""
+    text = ", ".join(str(v) for v in (human_answers or {}).values())
+    if not text.strip():
+        return []
+    segments = re.split(r",(?![^(]*\))", text)
+    items: list[dict[str, Any]] = []
+    for index, segment in enumerate(segments):
+        trimmed = segment.strip().lstrip("-→:•").strip()
+        if not trimmed:
+            continue
+        match = re.search(r"[$₹]\s?(\d+(?:\.\d{1,2})?)", trimmed)
+        if not match:
+            continue
+        price_value = float(match.group(1))
+        name = trimmed[: match.start()].strip()
+        # Drop a dangling unmatched "(" fragment, e.g. "Popcorn (small $5" -> "Popcorn"
+        # (the "small"/"large" variant note isn't worth keeping without its price).
+        if name.count("(") > name.count(")"):
+            name = name[: name.rfind("(")]
+        name = name.strip().rstrip(" (:.-").strip()
+        if not name or len(name) > 60:
+            continue
+        items.append({
+            "id": f"answer-item-{index}",
+            "name": name,
+            "category": "Popular",
+            "description": "",
+            "priceLabel": f"{currency_sym}{price_value:.2f}",
+            "priceSortValue": price_value,
+        })
+    return items
 
 logger = logging.getLogger(__name__)
 
@@ -157,286 +297,28 @@ def _workflow_fields(workflow_key: str, vertical: str) -> list[str]:
     return guide.get(vertical, guide.get("default", ["Name", "Phone", "Email", "Message"]))
 
 
-def _default_workflows_for_vertical(vertical: str) -> list[str]:
+SHAPE_DEFAULT_WORKFLOWS: dict[str, list[str]] = {
+    "storefront_commerce": ["online_ordering", "lead_capture"],
+    "scheduled_booking": ["appointment_booking", "lead_capture"],
+    "inquiry_lead": ["lead_capture", "quote_request"],
+    "portfolio_showcase": ["portfolio_showcase", "lead_capture"],
+    "catalog_reserve": ["catalog_reservation", "lead_capture"],
+}
+
+
+def _default_workflows_for_vertical(vertical: str, shape: str = "") -> list[str]:
     """Return sensible default workflow keys when the agent provides none."""
-    return VERTICAL_DEFAULT_WORKFLOWS.get(vertical, ["lead_capture", "contact_form"])
+    if vertical in VERTICAL_DEFAULT_WORKFLOWS:
+        return VERTICAL_DEFAULT_WORKFLOWS[vertical]
+    return SHAPE_DEFAULT_WORKFLOWS.get(shape, ["lead_capture", "contact_form"])
 
-
-# Base templates for different verticals
-RESTAURANT_TEMPLATE = """
-import React from 'react';
-import Head from 'next/head';
-
-export default function RestaurantPage({ business, branding }) {
-  return (
-    <div className="min-h-screen bg-gray-50">
-      <Head>
-        <title>{business.name} - {business.location}</title>
-        <meta name="description" content={business.unique_selling_points} />
-      </Head>
-      
-      {/* Header */}
-      <header style={{ backgroundColor: branding.primary_color }} className="text-white py-6">
-        <div className="container mx-auto px-4">
-          <h1 className="text-4xl font-bold">{business.name}</h1>
-          <p className="text-lg opacity-90">{business.location}</p>
-        </div>
-      </header>
-
-      {/* Hero Section */}
-      <section className="py-16 bg-gradient-to-br from-gray-100 to-gray-200">
-        <div className="container mx-auto px-4 text-center">
-          <h2 className="text-5xl font-bold mb-4" style={{ color: branding.primary_color }}>
-            Welcome to {business.name}
-          </h2>
-          <p className="text-xl text-gray-700 max-w-2xl mx-auto mb-8">
-            {business.unique_selling_points}
-          </p>
-          <button 
-            className="px-8 py-3 rounded-lg text-white font-semibold"
-            style={{ backgroundColor: branding.accent_color }}
-          >
-            Order Now
-          </button>
-        </div>
-      </section>
-
-      {/* Menu Section */}
-      <section className="py-16">
-        <div className="container mx-auto px-4">
-          <h3 className="text-3xl font-bold mb-8 text-center">Our Menu</h3>
-          <div className="grid md:grid-cols-3 gap-6">
-            {/* Menu items would be dynamically generated */}
-            <div className="bg-white rounded-lg shadow-md p-6">
-              <h4 className="font-bold text-lg mb-2">Signature Dish</h4>
-              <p className="text-gray-600">Delicious description here</p>
-              <p className="font-bold mt-2" style={{ color: branding.primary_color }}>$12.99</p>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Contact Section */}
-      <section className="py-16 bg-gray-800 text-white">
-        <div className="container mx-auto px-4">
-          <h3 className="text-3xl font-bold mb-8 text-center">Contact Us</h3>
-          <div className="grid md:grid-cols-2 gap-8 max-w-4xl mx-auto">
-            <div>
-              <h4 className="font-bold mb-2">Location</h4>
-              <p className="text-gray-300">{business.location}</p>
-            </div>
-            <div>
-              <h4 className="font-bold mb-2">Hours</h4>
-              <p className="text-gray-300">{business.business_hours}</p>
-            </div>
-            <div>
-              <h4 className="font-bold mb-2">Phone</h4>
-              <p className="text-gray-300">{business.phone_number}</p>
-            </div>
-            <div>
-              <h4 className="font-bold mb-2">Email</h4>
-              <p className="text-gray-300">{business.contact_email}</p>
-            </div>
-          </div>
-        </div>
-      </section>
-    </div>
-  );
-}
-"""
-
-CLINIC_TEMPLATE = """
-import React from 'react';
-import Head from 'next/head';
-
-export default function ClinicPage({ business, branding }) {
-  return (
-    <div className="min-h-screen bg-blue-50">
-      <Head>
-        <title>{business.name} - {business.location}</title>
-        <meta name="description" content={business.unique_selling_points} />
-      </Head>
-      
-      {/* Header */}
-      <header style={{ backgroundColor: branding.primary_color }} className="text-white py-6">
-        <div className="container mx-auto px-4">
-          <h1 className="text-4xl font-bold">{business.name}</h1>
-          <p className="text-lg opacity-90">{business.location}</p>
-        </div>
-      </header>
-
-      {/* Hero Section */}
-      <section className="py-16 bg-gradient-to-br from-blue-100 to-blue-200">
-        <div className="container mx-auto px-4 text-center">
-          <h2 className="text-5xl font-bold mb-4" style={{ color: branding.primary_color }}>
-            Your Health, Our Priority
-          </h2>
-          <p className="text-xl text-gray-700 max-w-2xl mx-auto mb-8">
-            {business.unique_selling_points}
-          </p>
-          <button 
-            className="px-8 py-3 rounded-lg text-white font-semibold"
-            style={{ backgroundColor: branding.accent_color }}
-          >
-            Book Appointment
-          </button>
-        </div>
-      </section>
-
-      {/* Services Section */}
-      <section className="py-16">
-        <div className="container mx-auto px-4">
-          <h3 className="text-3xl font-bold mb-8 text-center">Our Services</h3>
-          <div className="grid md:grid-cols-3 gap-6">
-            <div className="bg-white rounded-lg shadow-md p-6">
-              <h4 className="font-bold text-lg mb-2">General Checkup</h4>
-              <p className="text-gray-600">Comprehensive health assessments</p>
-            </div>
-            <div className="bg-white rounded-lg shadow-md p-6">
-              <h4 className="font-bold text-lg mb-2">Specialist Care</h4>
-              <p className="text-gray-600">Expert medical specialists</p>
-            </div>
-            <div className="bg-white rounded-lg shadow-md p-6">
-              <h4 className="font-bold text-lg mb-2">Emergency Care</h4>
-              <p className="text-gray-600">24/7 emergency services</p>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Contact Section */}
-      <section className="py-16 bg-gray-800 text-white">
-        <div className="container mx-auto px-4">
-          <h3 className="text-3xl font-bold mb-8 text-center">Contact Us</h3>
-          <div className="grid md:grid-cols-2 gap-8 max-w-4xl mx-auto">
-            <div>
-              <h4 className="font-bold mb-2">Location</h4>
-              <p className="text-gray-300">{business.location}</p>
-            </div>
-            <div>
-              <h4 className="font-bold mb-2">Hours</h4>
-              <p className="text-gray-300">{business.business_hours}</p>
-            </div>
-            <div>
-              <h4 className="font-bold mb-2">Phone</h4>
-              <p className="text-gray-300">{business.phone_number}</p>
-            </div>
-            <div>
-              <h4 className="font-bold mb-2">Email</h4>
-              <p className="text-gray-300">{business.contact_email}</p>
-            </div>
-          </div>
-        </div>
-      </section>
-    </div>
-  );
-}
-"""
-
-SERVICE_TEMPLATE = """
-import React from 'react';
-import Head from 'next/head';
-
-export default function ServicePage({ business, branding }) {
-  return (
-    <div className="min-h-screen bg-gray-50">
-      <Head>
-        <title>{business.name} - {business.location}</title>
-        <meta name="description" content={business.unique_selling_points} />
-      </Head>
-      
-      {/* Header */}
-      <header style={{ backgroundColor: branding.primary_color }} className="text-white py-6">
-        <div className="container mx-auto px-4">
-          <h1 className="text-4xl font-bold">{business.name}</h1>
-          <p className="text-lg opacity-90">{business.location}</p>
-        </div>
-      </header>
-
-      {/* Hero Section */}
-      <section className="py-16 bg-gradient-to-br from-orange-100 to-orange-200">
-        <div className="container mx-auto px-4 text-center">
-          <h2 className="text-5xl font-bold mb-4" style={{ color: branding.primary_color }}>
-            Expert Services You Can Trust
-          </h2>
-          <p className="text-xl text-gray-700 max-w-2xl mx-auto mb-8">
-            {business.unique_selling_points}
-          </p>
-          <button 
-            className="px-8 py-3 rounded-lg text-white font-semibold"
-            style={{ backgroundColor: branding.accent_color }}
-          >
-            Get a Quote
-          </button>
-        </div>
-      </section>
-
-      {/* Services Section */}
-      <section className="py-16">
-        <div className="container mx-auto px-4">
-          <h3 className="text-3xl font-bold mb-8 text-center">Our Services</h3>
-          <div className="grid md:grid-cols-3 gap-6">
-            <div className="bg-white rounded-lg shadow-md p-6">
-              <h4 className="font-bold text-lg mb-2">Repair Services</h4>
-              <p className="text-gray-600">Fast and reliable repairs</p>
-            </div>
-            <div className="bg-white rounded-lg shadow-md p-6">
-              <h4 className="font-bold text-lg mb-2">Maintenance</h4>
-              <p className="text-gray-600">Preventive maintenance plans</p>
-            </div>
-            <div className="bg-white rounded-lg shadow-md p-6">
-              <h4 className="font-bold text-lg mb-2">Emergency Service</h4>
-              <p className="text-gray-600">24/7 emergency support</p>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Contact Section */}
-      <section className="py-16 bg-gray-800 text-white">
-        <div className="container mx-auto px-4">
-          <h3 className="text-3xl font-bold mb-8 text-center">Contact Us</h3>
-          <div className="grid md:grid-cols-2 gap-8 max-w-4xl mx-auto">
-            <div>
-              <h4 className="font-bold mb-2">Service Area</h4>
-              <p className="text-gray-300">{business.location}</p>
-            </div>
-            <div>
-              <h4 className="font-bold mb-2">Hours</h4>
-              <p className="text-gray-300">{business.business_hours}</p>
-            </div>
-            <div>
-              <h4 className="font-bold mb-2">Phone</h4>
-              <p className="text-gray-300">{business.phone_number}</p>
-            </div>
-            <div>
-              <h4 className="font-bold mb-2">Email</h4>
-              <p className="text-gray-300">{business.contact_email}</p>
-            </div>
-          </div>
-        </div>
-      </section>
-    </div>
-  );
-}
-"""
 
 
 class CodeGenerator:
     """Template + AI-assisted code generator"""
-    
+
     def __init__(self, planner: Optional[ModelJsonPlanner] = None):
         self.planner = planner
-        self.templates = {
-            "restaurant": RESTAURANT_TEMPLATE,
-            "clinic": CLINIC_TEMPLATE,
-            "repair_service": SERVICE_TEMPLATE,
-            "service": SERVICE_TEMPLATE,
-        }
-    
-    def get_template_for_vertical(self, vertical: str) -> str:
-        """Get base template for a given vertical"""
-        return self.templates.get(vertical, self.templates["restaurant"])
 
     def generate_html_preview(self, build_spec: dict[str, Any]) -> str:
         """Generate a functional HTML preview with working forms and real business values"""
@@ -445,24 +327,43 @@ class CodeGenerator:
         name = business.get("name", "Our Business")
         location = business.get("location", "")
         vertical = business.get("vertical", "restaurant")
+        vertical_label = str(vertical or "").replace("_", " ").strip()
+        if not vertical_label or vertical_label.lower() == "unknown":
+            vertical_label = "business"
+        location_phrase = f" in {location}" if location else ""
         usp = (business.get("unique_selling_points")
-               or f"Your premier {vertical.replace('_', ' ')} in {location}")
+               or f"Your premier {vertical_label}{location_phrase}")
         hours = business.get("business_hours") or "Call us for our hours"
         phone = business.get("phone_number") or "Contact us online"
         email = business.get("contact_email") or business.get("email") or ""
+        human_answers = business.get("human_answers") or {}
         primary = (branding.get("primary_color")
                    or business.get("primary_color") or "#dc2626")
         accent = (branding.get("accent_color")
                   or business.get("accent_color") or "#f59e0b")
+        font_family = business.get("font_family") or "Inter"
+
+        # Visual mood, keyed off business_shape, so the deterministic fallback
+        # doesn't render the same "bold gradient" look for every business type
+        # either — mirrors the mood system used by generate_html_with_llm.
+        mood = self.SHAPE_TO_MOOD.get(build_spec.get("businessShape", ""), "bold")
+        mood_vars = self.PREVIEW_MOOD_VARS.get(mood, self.PREVIEW_MOOD_VARS["bold"])
+        radius = mood_vars["radius"]
+        btn_radius = mood_vars["btn_radius"]
+        hero_bg = mood_vars["hero_bg"].format(primary=primary, accent=accent)
+        hero_align = mood_vars["hero_align"]
+        heading_font = mood_vars["heading_font"] or f"'{font_family}'"
 
         features = build_spec.get("includedFeatures", [])
-        food_verticals = {"restaurant", "cafe", "bakery", "food", "pizzeria"}
-        is_food_business = str(vertical).lower() in food_verticals
+        menu_items = build_spec.get("menuItems", [])
         has_ordering = any(f.get("key") == "online_ordering" for f in features)
+        is_food_business = has_ordering or bool(menu_items)
         has_reservation = any(f.get("key") == "table_reservation" for f in features)
         has_booking = any(f.get("key") == "appointment_booking" for f in features)
+        has_booking = has_booking or str(vertical).lower() in {"clinic", "dental"}
 
-        cta_primary = "Order Now" if has_ordering else ("Book Appointment" if has_booking else "Get in Touch")
+        commerce = commerce_copy(build_spec.get("businessShape", ""), vertical, business.get("subtype", ""), business.get("goal", ""), usp)
+        cta_primary = commerce["cta"] if has_ordering else ("Book Appointment" if has_booking else "Get in Touch")
         cta_secondary = "Reserve a Table" if has_reservation else ""
 
         pages = build_spec.get("pages", ["Home", "Menu", "Contact"])
@@ -470,7 +371,11 @@ class CodeGenerator:
         _anchor_map = {
             "home": "hero", "menu": "menu", "order online": "menu",
             "order": "menu", "reservations": "reserve", "reservation": "reserve",
-            "book": "reserve", "appointments": "reserve", "about": "contact",
+            "book": "reserve", "appointments": "reserve", "appointment": "reserve",
+            "booking": "reserve", "services": "services", "service": "services",
+            "providers": "providers", "provider": "providers", "team": "providers",
+            "doctors": "providers", "dentists": "providers",
+            "about": "services",
             "contact": "contact", "find us": "contact", "gallery": "contact",
             "locations": "contact", "offers": "menu", "specials": "menu",
         }
@@ -514,9 +419,20 @@ class CodeGenerator:
         reserve_section = ""
         if has_reservation or has_booking:
             label = "Reserve a Table" if has_reservation else "Book an Appointment"
+            response_timing = str(human_answers.get("simulation_response_timing") or "").strip()
+            privacy_note = str(human_answers.get("simulation_privacy_reassurance") or "").strip()
+            reassurance = ""
+            if response_timing or privacy_note:
+                reassurance = (
+                    '<div class="reassurance-row">'
+                    f'{f"<span>{response_timing}</span>" if response_timing else ""}'
+                    f'{f"<span>{privacy_note}</span>" if privacy_note else ""}'
+                    '</div>'
+                )
             reserve_section = (
                 f'<section id="reserve" class="sec"><div class="wrap">'
                 f'<h2>{label}</h2><p class="sub">Secure your spot at {name}</p>'
+                f'{reassurance}'
                 f'<form class="frm" id="reserveForm">'
                 f'<input type="text" name="cname" placeholder="Your name" required>'
                 f'<input type="email" name="email" placeholder="Email address" required>'
@@ -524,6 +440,25 @@ class CodeGenerator:
                 f'<input type="number" name="guests" placeholder="Number of guests" min="1" max="20" required>'
                 f'<button type="submit">{label}</button></form>'
                 f'</div></section>'
+            )
+
+        provider_profiles = ""
+        provider_answer = str(human_answers.get("simulation_provider_credentials") or "").strip()
+        if provider_answer and str(vertical).lower() in {"clinic", "dental"}:
+            profile_cards = ""
+            for idx, item in enumerate([p.strip() for p in provider_answer.replace("\n", ";").split(";") if p.strip()][:3], start=1):
+                parts = [p.strip() for p in item.replace(" - ", ", ").split(",") if p.strip()]
+                profile_name = parts[0] if parts else f"Provider {idx}"
+                profile_detail = " · ".join(parts[1:]) if len(parts) > 1 else "Clinical care team"
+                profile_cards += (
+                    f'<div class="fc provider-card"><div class="avatar">{profile_name[:1]}</div>'
+                    f'<h4>{profile_name}</h4><p>{profile_detail}</p></div>'
+                )
+            provider_profiles = (
+                f'<section id="providers" class="sec alt"><div class="wrap">'
+                f'<h2>Meet Your Care Team</h2>'
+                f'<p class="sub">Provider details are shown before booking so patients can choose with confidence.</p>'
+                f'<div class="fgrid">{profile_cards}</div></div></section>'
             )
 
         email_row = f'<div class="ci"><h4>Email</h4><p>{email}</p></div>' if email else ""
@@ -537,53 +472,55 @@ class CodeGenerator:
         currency_sym = "\u20b9" if any(c in loc_low for c in india_cities) else "$"
         price_default: float = 199.0 if currency_sym == "\u20b9" else 9.99
 
-        # --- Menu items from BuildSpec ---
-        menu_items = build_spec.get("menuItems", [])
+        # --- Menu items from BuildSpec (loaded earlier, alongside is_food_business) ---
         if is_food_business and not menu_items:
-            menu_items = [
-                {
-                    "id": "fallback-margherita",
-                    "name": "Margherita Pizza",
-                    "category": "Popular",
-                    "description": "Classic house pizza ready for online ordering.",
-                    "priceLabel": f"{currency_sym}{price_default:.2f}",
-                    "priceSortValue": price_default,
-                },
-                {
-                    "id": "fallback-pasta",
-                    "name": "White Sauce Pasta",
-                    "category": "Popular",
-                    "description": "Creamy pasta option surfaced from restaurant intent.",
-                    "priceLabel": f"{currency_sym}{price_default + (50 if currency_sym == '\u20b9' else 3):.2f}",
-                    "priceSortValue": price_default + (50 if currency_sym == "\u20b9" else 3),
-                },
-            ]
+            menu_items = parse_items_from_human_answers(human_answers, currency_sym)
+            if not menu_items:
+                # No uploaded menu photo AND no usable clarification-answer
+                # data \u2014 don't guess with food-specific placeholder content
+                # (a restaurant menu is wrong for a theatre, salon, retailer,
+                # etc.); show an honest "not yet provided" placeholder instead.
+                menu_items = [
+                    {
+                        "id": "fallback-generic",
+                        "name": "Item pricing not yet provided",
+                        "category": "Popular",
+                        "description": "Add real items and prices to replace this placeholder.",
+                        "priceLabel": "--",
+                        "priceSortValue": 0,
+                    },
+                ]
         has_ordering = has_ordering or bool(menu_items and is_food_business)
-        cta_primary = "Order Now" if has_ordering else cta_primary
+        cta_primary = commerce["cta"] if has_ordering else cta_primary
         contact_cls = "sec" if (has_ordering or has_reservation or has_booking) else "sec alt"
-
-        _emap = [
-            (["burger","sandwich"],"🍔"),(["pizza"],"🍕"),(["fries","chips"],"🍟"),
-            (["steak","meat","grill"],"🥩"),(["breakfast","egg","waffle"],"🍳"),
-            (["pasta","noodle"],"🍝"),(["beverage","drink","juice","coffee","tea"],"🥤"),
-            (["salad","lunch"],"🥗"),(["soup","curry","stew"],"🍲"),
-            (["chicken","wings"],"🍗"),(["fish","seafood","shrimp"],"🐟"),
-            (["cake","dessert","sweet","ice cream"],"🍰"),(["dinner"],"🍽️"),
-            (["wrap","taco","burrito"],"🌯"),(["donut","pancake"],"🥞"),
-        ]
 
         def _emoji(n: str) -> str:
             nl = n.lower()
-            for kws, em in _emap:
+            for kws, em in commerce.get("emoji_map", []):
                 if any(k in nl for k in kws):
                     return em
-            return "🍴"
+            return commerce.get("default_emoji", "🍴")
+
+        def _item_category(item: dict) -> str:
+            raw_cat = item.get("category")
+            # Trust a real extracted category (e.g. "Veg"/"Non-Veg" from a
+            # menu photo) — only re-derive it for the generic placeholder
+            # categories our own answer-text parser assigns ("Menu"/"Popular"),
+            # since that parser can't tell a ticket tier from a snack on its own.
+            if raw_cat and raw_cat not in ("Menu", "Popular"):
+                return raw_cat
+            nl = str(item.get("name", "")).lower()
+            for kws, cat_name in commerce.get("item_category_map", []):
+                if any(k in nl for k in kws):
+                    return cat_name
+            return commerce.get("default_item_category", raw_cat or "Popular")
 
         def _card(item: dict) -> str:
             iid = str(item.get("id", "")).replace("'", "").replace('"', "")
             nm  = item.get("name", "Item")
-            cat = item.get("category", "Popular")
-            dsc = (item.get("description") or f"Freshly prepared {nm.lower()}.")
+            cat = _item_category(item)
+            desc_fallback = commerce.get("description_fallback", "").format(name=nm.lower()) if commerce.get("description_fallback") else ""
+            dsc = (item.get("description") or desc_fallback)
             dsc = dsc[:65] + ("..." if len(dsc) > 65 else "")
             pl  = item.get("priceLabel") or f"{currency_sym}{price_default:.2f}"
             pn  = float(item.get("priceSortValue") or price_default)
@@ -605,7 +542,7 @@ class CodeGenerator:
                 f'</div></div></div>'
             )
 
-        cats = list(dict.fromkeys(i.get("category", "Popular") for i in menu_items)) if menu_items else []
+        cats = list(dict.fromkeys(_item_category(i) for i in menu_items)) if menu_items else []
         cat_tabs_html = (
             '<button class="ctab active" onclick="filterCat(\'all\',this)">All</button>'
             + "".join(f'<button class="ctab" onclick="filterCat(\'{c}\',this)">{c}</button>' for c in cats)
@@ -616,7 +553,7 @@ class CodeGenerator:
         if menu_items:
             menu_section = (
                 f'<section id="menu" class="sec alt"><div class="wrap">'
-                f'<h2>Our Menu</h2><p class="sub">Tap any item to add it to your order</p>'
+                f'<h2>{commerce["items_heading"]}</h2><p class="sub">{commerce["items_subtext"]}</p>'
                 f'<div class="cat-row">{cat_tabs_html}</div>'
                 f'<div class="mi-list" id="miList">{items_html}</div>'
                 f'</div></section>'
@@ -659,26 +596,28 @@ class CodeGenerator:
         # --- CSS (core + menu + cart) ---
         css = (
             "*{box-sizing:border-box;margin:0;padding:0}"
-            "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#1f2937;padding-bottom:70px;background:#f8faf9}"
+            f"body{{font-family:'{font_family}',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#1f2937;padding-bottom:70px;background:#f8faf9}}"
             f"nav{{background:{primary};color:#fff;padding:.8rem 2rem;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:99}}"
             "nav strong{font-size:1.05rem;font-weight:700}"
             "nav a{color:#fff;text-decoration:none;margin-left:1rem;font-size:.88rem;opacity:.9}"
-            f".hero{{background:radial-gradient(circle at 85% 12%,{accent}55,transparent 28%),linear-gradient(135deg,{primary},{primary}cc);color:#fff;padding:5.5rem 2rem 4.5rem;text-align:left;position:relative;overflow:hidden}}"
-            ".hero::after{content:'';position:absolute;right:-120px;bottom:-160px;width:420px;height:420px;border-radius:50%;background:rgba(255,255,255,.11)}"
-            ".hero h1{font-size:clamp(2.4rem,6vw,4.4rem);line-height:1;font-weight:850;margin:0 auto .9rem;max-width:860px;letter-spacing:0}"
+            f".hero{{background:{hero_bg};color:#fff;padding:5.5rem 2rem 4.5rem;text-align:{hero_align};position:relative;overflow:hidden}}"
+            + (".hero::after{content:'';position:absolute;right:-120px;bottom:-160px;width:420px;height:420px;border-radius:50%;background:rgba(255,255,255,.11)}" if mood == "bold" else "")
+            + f".hero h1{{font-family:{heading_font},sans-serif;font-size:clamp(2.4rem,6vw,4.4rem);line-height:1.05;font-weight:800;margin:0 auto .9rem;max-width:860px;letter-spacing:0}}"
             ".hero p{font-size:1.13rem;line-height:1.65;max-width:720px;margin:.5rem auto 2rem;opacity:.93}"
-            ".ctas{display:flex;gap:.75rem;justify-content:flex-start;flex-wrap:wrap;max-width:860px;margin:0 auto}"
-            f".btn-p{{background:{accent};color:#fff;border:none;padding:.8rem 1.75rem;border-radius:.5rem;font-size:1rem;font-weight:700;cursor:pointer;text-decoration:none}}"
-            ".btn-s{background:transparent;color:#fff;border:2px solid rgba(255,255,255,.8);padding:.8rem 1.75rem;border-radius:.5rem;font-size:1rem;font-weight:600;cursor:pointer;text-decoration:none}"
+            f".ctas{{display:flex;gap:.75rem;justify-content:{'center' if hero_align == 'center' else 'flex-start'};flex-wrap:wrap;max-width:860px;margin:0 auto}}"
+            f".btn-p{{background:{accent};color:#fff;border:none;padding:.8rem 1.75rem;border-radius:{btn_radius};font-size:1rem;font-weight:700;cursor:pointer;text-decoration:none}}"
+            f".btn-s{{background:transparent;color:#fff;border:2px solid rgba(255,255,255,.8);padding:.8rem 1.75rem;border-radius:{btn_radius};font-size:1rem;font-weight:600;cursor:pointer;text-decoration:none}}"
             ".sec{padding:3.5rem 2rem}.sec.alt{background:#f9fafb}"
             ".wrap{max-width:860px;margin:0 auto}"
-            f"h2{{font-size:1.75rem;font-weight:700;color:{primary};margin-bottom:.4rem}}"
+            f"h2{{font-family:{heading_font},sans-serif;font-size:1.75rem;font-weight:700;color:{primary};margin-bottom:.4rem}}"
             ".sub{color:#6b7280;margin-bottom:1.5rem;font-size:.97rem}"
             ".fgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:1rem}"
-            f".fc{{background:linear-gradient(180deg,#fff,#fbfdfb);border:1px solid #e5e7eb;border-radius:1rem;padding:1.35rem;box-shadow:0 14px 32px rgba(15,23,42,.07)}}"
+            f".fc{{background:linear-gradient(180deg,#fff,#fbfdfb);border:1px solid #e5e7eb;border-radius:{radius};padding:1.35rem;box-shadow:0 14px 32px rgba(15,23,42,.07)}}"
             f".fc h4{{color:{primary};font-weight:700;margin-bottom:.4rem;font-size:.95rem}}"
             ".fc p{font-size:.85rem;color:#6b7280}"
             ".frm{display:flex;flex-direction:column;gap:.7rem;max-width:460px}"
+            ".reassurance-row{display:flex;flex-wrap:wrap;gap:.5rem;margin:0 0 1rem}.reassurance-row span{background:#fff;border:1px solid #d1d5db;border-radius:999px;padding:.45rem .75rem;font-size:.82rem;font-weight:700;color:#4b5563}"
+            f".avatar{{width:42px;height:42px;border-radius:999px;background:{primary};color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;margin-bottom:.75rem}}"
             "input,textarea{padding:.75rem 1rem;border:1px solid #d1d5db;border-radius:.5rem;font-size:.95rem;font-family:inherit}"
             f".frm button{{padding:.85rem;background:{primary};color:#fff;border:none;border-radius:.5rem;font-size:1rem;font-weight:700;cursor:pointer}}"
             ".ok{color:#16a34a;font-weight:600;padding:1rem 0;font-size:1.05rem}"
@@ -792,12 +731,13 @@ class CodeGenerator:
             f'<section class="hero"><h1>{name}</h1><p>{usp}</p>'
             f'<div class="ctas"><a href="#{hero_cta_href}" class="btn-p" onclick="{_scroll_js}">{cta_primary}</a>{reserve_btn}</div>'
             f'</section>'
-            f'<section class="sec"><div class="wrap">'
-            f'<h2>{"Order, Reserve, Enjoy" if is_food_business else "How We Help"}</h2>'
-            f'<p class="sub">{"A smoother way to browse the menu, place an order, or plan a visit." if is_food_business else f"Simple ways to connect with {name}."}</p>'
+            f'<section id="services" class="sec"><div class="wrap">'
+            f'<h2>{commerce["overview_heading"] if has_ordering else "How We Help"}</h2>'
+            f'<p class="sub">{commerce["overview_subtext"] if has_ordering else f"Simple ways to connect with {name}."}</p>'
             f'<div class="fgrid">{feat_cards}</div></div></section>'
             f'{menu_section}'
             f'{order_section}'
+            f'{provider_profiles}'
             f'{reserve_section}'
             f'<section id="contact" class="{contact_cls}">'
             f'<div class="wrap"><h2>Find Us</h2><p class="sub">Get in touch with {name}</p>'
@@ -810,69 +750,57 @@ class CodeGenerator:
             f'</body></html>'
         )
     
-    # ------------------------------------------------------------------
-    # Modern design-system CSS injected verbatim into every LLM page.
-    # Anchored to CSS custom properties so brand colours work without
-    # the LLM having to re-derive them.
-    # ------------------------------------------------------------------
-    _BASE_CSS_TPL = (
-        "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');"
-        "*{{box-sizing:border-box;margin:0;padding:0}}"
-        ":root{{--p:{primary};--a:{accent};--bg:#f8fafc;--text:#0f172a;--muted:#64748b;--border:#e2e8f0;--r:12px;--sh:0 4px 6px -1px rgba(0,0,0,.07),0 2px 4px rgba(0,0,0,.05)}}"
-        "body{{font-family:'Inter',system-ui,sans-serif;color:var(--text);background:var(--bg)}}"
-        "nav{{background:var(--p);position:sticky;top:0;z-index:100;padding:.9rem 2rem;display:flex;align-items:center;justify-content:space-between;box-shadow:0 1px 3px rgba(0,0,0,.15)}}"
-        ".nav-logo{{font-size:1.05rem;font-weight:800;color:#fff;letter-spacing:0;text-decoration:none}}"
-        ".nav-links{{display:flex;gap:1.75rem}}"
-        ".nav-links a{{color:rgba(255,255,255,.82);text-decoration:none;font-size:.875rem;font-weight:500;transition:color .15s;cursor:pointer}}"
-        ".nav-links a:hover{{color:#fff}}"
-        ".hero{{padding:6rem 2rem 5rem;text-align:left;background:radial-gradient(circle at 85% 12%,var(--a) 0,transparent 28%),linear-gradient(135deg,var(--p) 0%,color-mix(in srgb,var(--p) 72%,#000) 100%);position:relative;overflow:hidden}}"
-        ".hero h1{{font-size:clamp(2.25rem,6vw,4.5rem);font-weight:850;color:#fff;letter-spacing:0;line-height:1;margin:0 auto 1rem;max-width:920px}}"
-        ".hero p{{font-size:1.1rem;color:rgba(255,255,255,.86);max-width:720px;margin:.5rem auto 2.5rem;line-height:1.65}}"
-        ".cta-row{{display:flex;gap:.875rem;justify-content:flex-start;max-width:920px;margin:0 auto;flex-wrap:wrap}}"
-        ".btn{{display:inline-block;padding:.85rem 2rem;border-radius:var(--r);font-size:.95rem;font-weight:700;text-decoration:none;cursor:pointer;border:none;transition:all .2s;font-family:inherit}}"
-        ".btn-accent{{background:var(--a);color:#fff;box-shadow:0 4px 14px rgba(0,0,0,.18)}}"
-        ".btn-accent:hover{{transform:translateY(-2px);box-shadow:0 8px 22px rgba(0,0,0,.22)}}"
-        ".btn-ghost{{background:transparent;color:#fff;border:2px solid rgba(255,255,255,.55)}}"
-        ".btn-ghost:hover{{background:rgba(255,255,255,.12)}}"
-        ".trust-bar{{background:#fff;border-bottom:1px solid var(--border);padding:.875rem 2rem;display:flex;gap:2rem;justify-content:center;flex-wrap:wrap}}"
-        ".trust-item{{font-size:.8rem;font-weight:600;color:var(--muted);display:flex;align-items:center;gap:.35rem}}"
-        "section.sec{{padding:5rem 2rem}}"
-        "section.sec.alt{{background:#fff}}"
-        ".container{{max-width:960px;margin:0 auto}}"
-        ".sec-tag{{font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--p);margin-bottom:.6rem}}"
-        ".sec-title{{font-size:1.875rem;font-weight:800;letter-spacing:0;margin-bottom:.4rem}}"
-        ".sec-sub{{color:var(--muted);font-size:.975rem;margin-bottom:2.25rem;line-height:1.65}}"
-        ".card{{background:linear-gradient(180deg,#fff,#fbfdfb);border:1px solid var(--border);border-radius:var(--r);padding:1.75rem;box-shadow:0 14px 32px rgba(15,23,42,.08);transition:box-shadow .2s,transform .2s}}"
-        ".card:hover{{transform:translateY(-2px);box-shadow:0 18px 42px rgba(15,23,42,.12)}}"
-        ".card-icon{{font-size:1.75rem;margin-bottom:.875rem}}"
-        ".card h3{{font-size:1rem;font-weight:700;margin-bottom:.4rem}}"
-        ".card p{{font-size:.875rem;color:var(--muted);line-height:1.55}}"
-        ".grid-3{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1.25rem}}"
-        ".grid-2{{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:1.5rem}}"
-        "form.wf-form{{display:flex;flex-direction:column;gap:.875rem;max-width:500px}}"
-        "form.wf-form label{{font-size:.8rem;font-weight:600;color:var(--text);margin-bottom:.15rem;display:block}}"
-        "form.wf-form input,form.wf-form textarea,form.wf-form select{{padding:.75rem 1rem;border:1.5px solid var(--border);border-radius:8px;font-size:.9rem;font-family:inherit;color:var(--text);background:#fff;transition:border-color .2s;width:100%}}"
-        "form.wf-form input:focus,form.wf-form textarea:focus,form.wf-form select:focus{{outline:none;border-color:var(--p);box-shadow:0 0 0 3px color-mix(in srgb,var(--p) 15%,transparent)}}"
-        ".wf-submit{{padding:.875rem;background:var(--p);color:#fff;border:none;border-radius:8px;font-size:1rem;font-weight:700;cursor:pointer;font-family:inherit;transition:background .2s;width:100%}}"
-        ".wf-submit:hover{{background:color-mix(in srgb,var(--p) 83%,#000)}}"
-        ".success-card{{background:#f0fdf4;border:1.5px solid #86efac;border-radius:var(--r);padding:2rem;text-align:center;color:#166534}}"
-        ".success-card h3{{font-size:1.1rem;font-weight:700;margin-bottom:.4rem}}"
-        ".success-card p{{font-size:.9rem;opacity:.85}}"
-        ".info-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:1rem;margin-top:1.5rem}}"
-        ".info-card{{background:#fff;border:1px solid var(--border);border-radius:var(--r);padding:1.25rem;text-align:center}}"
-        ".info-card h4{{font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--p);margin-bottom:.4rem}}"
-        ".info-card p{{font-size:.9rem;color:var(--text);font-weight:500}}"
-        "footer{{background:var(--p);color:rgba(255,255,255,.7);text-align:center;padding:2.5rem 2rem;font-size:.875rem;line-height:1.7}}"
-        "footer strong{{color:#fff;font-weight:700}}"
-        "@media(max-width:640px){{.nav-links{{display:none}}.hero{{padding:4rem 1.25rem 3rem}}section.sec{{padding:3rem 1.25rem}}}}"
-    )
+    SHAPE_TO_MOOD: dict[str, str] = {
+        "storefront_commerce": "bold",
+        "scheduled_booking": "trust",
+        "inquiry_lead": "structured",
+        "portfolio_showcase": "editorial",
+        "catalog_reserve": "trust",
+    }
 
-    _BASE_JS = (
-        "<script>"
-        "function navTo(id){var el=document.getElementById(id);if(el)el.scrollIntoView({behavior:'smooth',block:'start'});}"
-        "function wfForm(formId,type){var f=document.getElementById(formId);if(!f)return;f.addEventListener('submit',function(e){e.preventDefault();var d={};new FormData(f).forEach(function(v,k){d[k]=v;});window.parent.postMessage(Object.assign({type:type},d),'*');var p=f.parentElement;p.innerHTML='<div class=\"success-card\"><h3>&#10003; Got it!</h3><p>We\\'ll be in touch shortly.</p></div>';});}"
-        "</script>"
-    )
+    # Mood knobs for the deterministic generate_html_preview fallback, which
+    # has cart/menu JS-bound classes that must keep their exact names/structure
+    # — so only the hero/radius/heading personality varies here.
+    PREVIEW_MOOD_VARS: dict[str, dict[str, Any]] = {
+        "bold": {
+            "radius": "1rem", "btn_radius": ".5rem", "hero_align": "left",
+            "hero_bg": "radial-gradient(circle at 85% 12%,{accent}55,transparent 28%),linear-gradient(135deg,{primary},{primary}cc)",
+            "heading_font": None,
+        },
+        "trust": {
+            "radius": ".65rem", "btn_radius": ".65rem", "hero_align": "center",
+            "hero_bg": "{primary}",
+            "heading_font": "'Source Serif 4',serif",
+        },
+        "structured": {
+            "radius": ".2rem", "btn_radius": ".2rem", "hero_align": "left",
+            "hero_bg": "{primary}",
+            "heading_font": None,
+        },
+        "editorial": {
+            "radius": "0", "btn_radius": "0", "hero_align": "center",
+            "hero_bg": "#0a0a0a",
+            "heading_font": "'Playfair Display',serif",
+        },
+    }
+
+    # Describes each mood in words for the free-form LLM brief (generate_html_with_llm) —
+    # PREVIEW_MOOD_VARS above remains the literal CSS knobs used only by the deterministic
+    # fallback renderer (generate_html_preview).
+    MOOD_TONE_DESCRIPTIONS: dict[str, str] = {
+        "bold": "fast-moving, energetic, impulse-driven — confident color, big decisive type, low friction to act now",
+        "trust": "calm, credible, reassuring — generous whitespace, a refined muted palette, credentials and proof placed where decisions happen",
+        "structured": "organized, efficient, no-nonsense — clear grids, utilitarian layout, easy to scan and compare quickly",
+        "editorial": "sophisticated, story-led, considered — elegant typography, magazine-like pacing, curated imagery over busy UI chrome",
+    }
+
+    # Guide-key categories that represent scheduling a slot on a calendar
+    # (appointment/table) — these report their submissions to the admin
+    # dashboard as postMessage type "reservation"; everything else (general
+    # enquiries, quotes, intake) reports as "lead". This is the ONLY structural
+    # contract handed to the free-form HTML generation prompt below — the
+    # dashboard listener (app.js) buckets purely on this `type` field.
+    _RESERVATION_GUIDE_KEYS = {"appointment_booking", "table_reservation"}
 
     def generate_html_with_llm(
         self,
@@ -892,65 +820,107 @@ class CodeGenerator:
         hours = business.get("business_hours", "")
         phone = business.get("phone_number", "")
         goal = business.get("goal", "")
-        primary = branding.get("primary_color") or business.get("primary_color") or "#2563eb"
-        accent = branding.get("accent_color") or business.get("accent_color") or "#f59e0b"
-
         ctx = agent_context or {}
         requirements_spec = ctx.get("requirements_spec") or {}
+        design_spec = ctx.get("design_spec") or {}
+        visual_system = design_spec.get("visual_system") or {}
         reasoning_notes = ctx.get("reasoning_notes") or []
         retrieved_memories = ctx.get("retrieved_memories") or []
+        human_answers = ctx.get("human_answers") or {}
+        research_results = ctx.get("research_results") or {}
+        primary = visual_system.get("primary_color") or branding.get("primary_color") or business.get("primary_color") or "#2563eb"
+        accent = visual_system.get("accent_color") or branding.get("accent_color") or business.get("accent_color") or "#f59e0b"
+        font_family = visual_system.get("font_family") or business.get("font_family") or "Inter"
 
         raw_workflows: list[Any] = (
             requirements_spec.get("required_workflows")
             or [f.get("key", "") for f in build_spec.get("includedFeatures", []) if f.get("key")]
-            or _default_workflows_for_vertical(vertical)
+            or _default_workflows_for_vertical(vertical, build_spec.get("businessShape", ""))
         )
         trust_requirements: list[str] = requirements_spec.get("trust_requirements") or []
         menu_items: list[dict] = build_spec.get("menuItems", [])
 
-        # Pre-assign deterministic anchor IDs so nav links always match sections.
+        # Which interaction pattern does this business actually need? A cart
+        # (browse multiple priced items, add several, checkout) is completely
+        # different from a one-click reserve (library/rental: no price, no
+        # running total) or a plain contact form (booking/lead/quote) — using
+        # the same cart UI for all of them is exactly what made every
+        # generated site feel like the same restaurant template regardless
+        # of business type.
+        feature_keys = {str(f.get("key", "")).lower() for f in build_spec.get("includedFeatures", [])}
+        # Check reserve FIRST: `menuItems` is reused generically as "the list
+        # of real items" for both purchasable products AND catalog/library
+        # items, so a non-empty list alone can't be trusted to mean "needs a
+        # cart" — an explicit catalog_reservation feature must win over that.
+        needs_reserve = "catalog_reservation" in feature_keys
+        needs_cart = (not needs_reserve) and ("online_ordering" in feature_keys or bool(menu_items))
+        commerce = commerce_copy(build_spec.get("businessShape", ""), vertical, business.get("subtype", ""), goal, usp)
+        loc_low = location.lower()
+        india_cities = ["india", "bangalore", "bengaluru", "mumbai", "delhi", "chennai", "hyderabad", "pune", "kolkata"]
+        currency_sym = "₹" if any(c in loc_low for c in india_cities) else "$"
+
+        # These workflow keys are handled by the dedicated cart/reserve
+        # section below instead of a generic contact form.
+        skip_workflow_keys: set[str] = set()
+        if needs_cart:
+            skip_workflow_keys.update({"order", "online_ordering"})
+        if needs_reserve:
+            skip_workflow_keys.add("catalog_reservation")
+
+        # Each remaining workflow (booking/lead/quote/etc.) becomes a plain-English
+        # requirement rather than a prescribed <form id=...> markup — the model
+        # decides the actual HTML/JS, it just has to fire the integration hook
+        # (see prompt below) with the right `type` when the visitor submits.
         workflow_specs: list[dict] = []
         for wf in raw_workflows:
             wf_key = str(wf).lower().replace(" ", "_")
+            if wf_key in skip_workflow_keys:
+                continue
             matched = next((k for k in WORKFLOW_FIELD_GUIDE if k in wf_key or wf_key in k), None)
             fields = _workflow_fields(matched, vertical) if matched else ["Name", "Phone", "Email", "Message"]
             guide_key = matched or wf_key
-            section_id = f"sec-{guide_key.replace('_', '-')[:22]}"
             title = guide_key.replace("_", " ").title()
-            form_id = f"form-{guide_key[:18]}"
-            workflow_specs.append({
-                "wf": wf, "guide_key": guide_key, "section_id": section_id,
-                "title": title, "form_id": form_id, "fields": fields,
-            })
+            canonical_type = "reservation" if guide_key in self._RESERVATION_GUIDE_KEYS else "lead"
+            workflow_specs.append({"guide_key": guide_key, "title": title, "fields": fields, "type": canonical_type})
 
-        # Build nav items: always include hero + each workflow + contact
-        nav_items = [("Home", "sec-hero")] + [(ws["title"], ws["section_id"]) for ws in workflow_specs] + [("Contact", "sec-contact")]
-        nav_links_html = "".join(
-            f'<a onclick="navTo(\'{sid}\')">{lbl}</a>'
-            for lbl, sid in nav_items
-        )
-        first_cta_id = workflow_specs[0]["section_id"] if workflow_specs else "sec-contact"
+        wf_lines = [
+            f'- "{ws["title"]}" — let visitors submit: {", ".join(ws["fields"])}. Write intro copy specific to '
+            f'this {vertical} business explaining why they would use it. On submit, fire the integration hook '
+            f'below with type="{ws["type"]}", then show a friendly confirmation in place of the form.'
+            for ws in workflow_specs
+        ]
+        wf_block = ("\n" + "\n".join(wf_lines)) if wf_lines else ""
 
-        # Workflow section specifications for the prompt
-        wf_spec_lines: list[str] = []
-        form_init_calls: list[str] = []
-        for ws in workflow_specs:
-            fields_str = "; ".join(ws["fields"])
-            wf_spec_lines.append(
-                f'SECTION id="{ws["section_id"]}" title="{ws["title"]}":\n'
-                f'  Write compelling intro copy for a {vertical} business.\n'
-                f'  Include a <form id="{ws["form_id"]}" class="wf-form"> with these fields: {fields_str}.\n'
-                f'  End form with <button type="submit" class="wf-submit">Submit</button>.\n'
-                f'  Do NOT add any form onsubmit attribute — JS wires it up separately.'
+        items_block = ""
+        if needs_cart:
+            item_lines = "\n".join(
+                f'  - {item.get("name", "Item")} — {currency_sym}{item.get("priceSortValue", 0)}'
+                for item in menu_items[:20]
+            ) if menu_items else "  (no real items were provided — invent 3-4 plausible items with realistic prices for this specific business)"
+            items_block = (
+                f'\n═══ WORKFLOW: BROWSE & BUY ═══\n'
+                f'{commerce["items_subtext"]} Let visitors browse the real items below, add any of them to a '
+                f'running cart, see a live count/total, and check out. Design the browsing layout, the cart UI '
+                f'(drawer, sidebar, floating bar — your call) and the checkout step yourself; write a short, '
+                f'item-specific description for each card rather than a generic phrase like "Freshly prepared X".\n'
+                f'Real items to feature (use these exact names and prices, do not invent different ones):\n{item_lines}\n'
+                f'When checkout completes, fire the integration hook below with type="order", summary listing '
+                f'what was ordered, and the formatted total.'
             )
-            form_init_calls.append(f'wfForm("{ws["form_id"]}","{ws["guide_key"]}")')
-
-        wf_spec_block = "\n\n".join(wf_spec_lines)
-        form_init_js = (
-            "<script>document.addEventListener('DOMContentLoaded',function(){"
-            + "".join(f"{c};" for c in form_init_calls)
-            + "});</script>"
-        )
+        elif needs_reserve:
+            item_lines = "\n".join(
+                f'  - {item.get("name", "Item")}'
+                for item in menu_items[:20]
+            ) if menu_items else "  (no real catalog items were provided — invent 3-4 plausible items for this business's catalog)"
+            items_block = (
+                f'\n═══ WORKFLOW: BROWSE & RESERVE ═══\n'
+                f'{commerce["items_subtext"]} Let visitors browse the real catalog items below and place a '
+                f'one-click hold on any of them — this is a reservation, not a purchase, so there is no price, '
+                f'cart, or checkout step. Design the catalog layout and reserve interaction yourself.\n'
+                f'Real items to feature:\n{item_lines}\n'
+                f'When a visitor reserves an item, fire the integration hook below with type="reservation" and '
+                f'a summary naming the item held.'
+            )
 
         trust_str = "; ".join(trust_requirements[:4]) if trust_requirements else \
             f"Show phone ({phone}), business hours, and location prominently to build trust."
@@ -965,10 +935,40 @@ class CodeGenerator:
             extras += "\nPATTERNS FROM MEMORY:\n" + "\n".join(f"  - {m}" for m in memory_lines)
         if menu_sample:
             extras += f"\nMENU ITEMS (show as visual cards in a dedicated menu section between hero and workflows): {menu_sample}"
+        if human_answers:
+            extras += f"\nHUMAN CLARIFICATIONS (must be reflected in the page): {human_answers}"
 
-        base_css = self._BASE_CSS_TPL.format(primary=primary, accent=accent)
+        competitor = research_results.get("competitor_analysis") or {}
+        local_seo = research_results.get("local_seo") or {}
+        menu_research = research_results.get("menu_extraction") or {}
+        research_lines: list[str] = []
+        if competitor.get("market_gaps"):
+            research_lines.append("Market gaps to exploit in the hero/positioning copy: " + "; ".join(competitor["market_gaps"][:3]))
+        if competitor.get("differentiation_opportunities"):
+            research_lines.append("Differentiation angles to emphasize: " + "; ".join(competitor["differentiation_opportunities"][:3]))
+        if competitor.get("competitor_weaknesses"):
+            research_lines.append("Competitor weaknesses this business should visibly do better on: " + "; ".join(competitor["competitor_weaknesses"][:3]))
+        if local_seo.get("target_keywords"):
+            research_lines.append("Work these SEO keywords naturally into headings/copy: " + ", ".join(local_seo["target_keywords"][:6]))
+        if local_seo.get("local_search_terms"):
+            research_lines.append("Local search terms to reflect in copy: " + ", ".join(local_seo["local_search_terms"][:4]))
+        if menu_research.get("business_highlights"):
+            research_lines.append("Highlights to call out: " + "; ".join(menu_research["business_highlights"][:3]))
+        if menu_research.get("special_offers"):
+            research_lines.append("Special offers to feature: " + "; ".join(menu_research["special_offers"][:2]))
+        if research_lines:
+            extras += "\nRESEARCH FINDINGS (this is real research on competitors and local SEO — the copy must reflect it, not generic filler):\n" + "\n".join(f"  - {line}" for line in research_lines)
 
-        prompt = f"""You are generating a single-file HTML website. Follow these instructions EXACTLY.
+        shape = build_spec.get("businessShape", "")
+        mood = self.SHAPE_TO_MOOD.get(shape, "bold")
+        mood_desc = self.MOOD_TONE_DESCRIPTIONS.get(mood, "")
+
+        prompt = f"""You are a senior web designer/engineer building a single-file HTML website for a real business.
+
+The result must look and feel like a premium, bespoke, modern website — the kind a top design studio, or a
+flagship AI model asked directly to "design me a beautiful, authentic website for my business", would produce.
+It must NOT look like a generic template, a spec sheet, or an admin form. That bar applies here regardless of
+how ordinary this business type sounds — an "ordinary" business still deserves a genuinely well-designed site.
 
 ═══ BUSINESS ═══
 Name: {name} | Type: {vertical} | Location: {location}
@@ -977,51 +977,45 @@ USP: {usp}
 Hours: {hours} | Phone: {phone}
 {extras}
 
-═══ PAGE STRUCTURE (use these exact section IDs) ═══
-1. <nav> — sticky navigation with logo "{name}" and these links: {", ".join(f"{lbl}→#{sid}" for lbl,sid in nav_items)}
-2. <section id="sec-hero" class="hero"> — full-width hero with h1, tagline, CTA button pointing to #{first_cta_id}
-3. Trust bar — one row showing: phone, hours, location as trust-item spans
-4. Features overview — 3-card grid highlighting the business's key strengths
-{wf_spec_block}
-5. <section id="sec-contact" class="sec alt"> — contact info cards (hours, phone, location)
-6. <footer> — business name, location, copyright
+═══ CREATIVE FREEDOM — YOU DECIDE ═══
+Layout, section order, structure, typography, color use, CSS techniques, animations/transitions, and navigation
+style are entirely up to you. The brand colors below are a starting point, not a cage — introduce complementary
+colors if the design calls for it. Use real photographic imagery wherever it strengthens the page:
+https://picsum.photos/seed/<a-descriptive-seed>/<width>/<height> returns real, working placeholder photos with
+no signup or API key needed — use a different seed per image so nothing repeats. Google Fonts via <link> tags,
+inline SVG icons, gradients, and background patterns are all fair game.
+Brand starting point: primary {primary}, accent {accent}, font {font_family}.
+Design mood for this business: "{mood}" — {mood_desc}.
 
-═══ ACTION ROUTING ═══
-- Every non-submit CTA/button must include onclick="navTo('target-section-id')".
-- Primary action buttons must point to "{first_cta_id}".
-- Contact/support buttons must point to "sec-contact".
-- Do not create href="#" links or inert buttons.
-- Form submit buttons must remain type="submit" and stay inside their matching form.
+═══ WHAT THIS PAGE MUST LET VISITORS DO (build it however you like) ═══
+- Immediately understand what {name} is and why they should care — a real hero moment, not a placeholder banner.
+- Reach everything you build on the page — give it some form of navigation, whatever style suits your design.
+{items_block}{wf_block}
+- See real trust signals: {trust_str}
+- Find hours ({hours}), phone ({phone}), and location ({location}) easily.
 
-═══ VISUAL QUALITY ═══
-- Make the page feel like a polished customer website, not an admin/spec view.
-- Use a strong first viewport, clear hierarchy, generous spacing, and benefit-led copy.
-- Prefer concrete menu/service cards, trust proof, hours/location, and action modules over generic feature explanations.
-- Do not write explanatory copy about why sections were included.
+═══ THE ONLY INTEGRATION REQUIREMENT ═══
+This page runs inside the business owner's dashboard as an iframe. Whenever a visitor completes one of the
+actions above (places an order, reserves an item, submits a form), your JavaScript must call:
+    window.parent.postMessage({{type:"order"|"reservation"|"lead", summary:"<short human-readable summary of
+    what they did/ordered/requested>", customer:"<their name if collected, else empty string>",
+    contact:"<their phone or email if collected, else empty string>"}}, "*")
+Use the exact type given for each action above (specified next to each workflow). Beyond firing this one call
+at the right moment, how you build the UI/JS to get there is entirely your choice — no prescribed markup,
+function names, or class names to follow.
 
-═══ TRUST REQUIREMENTS ═══
-{trust_str}
-
-═══ CSS — EMBED THIS VERBATIM inside <style> ═══
-{base_css}
-
-═══ JS — EMBED THESE TWO BLOCKS VERBATIM ═══
-Block 1 (smooth scroll + form wiring helper):
-{self._BASE_JS}
-
-Block 2 (wire up all forms after DOM loads):
-{form_init_js}
-
-═══ RULES ═══
-- Output ONLY raw HTML starting with <!DOCTYPE html>. No markdown, no code fences, no explanation.
-- Every nav link must use onclick="navTo('section-id')" with the exact IDs listed above.
-- Hero CTA button must use onclick="navTo('{first_cta_id}')".
-- Do NOT add any inline onsubmit to forms — the JS block handles it.
-- Write only customer-facing website copy. Never mention BuildSpec, agents, planner reasoning, backend modules, implementation details, or phrases like "included because".
-- Use class names from the CSS above (sec, alt, container, card, grid-3, btn, btn-accent, etc.)."""
+═══ OUTPUT FORMAT ═══
+- Output ONLY raw HTML starting with <!DOCTYPE html>, with your own <style> and <script> inline. No markdown,
+  no code fences, no explanation before or after.
+- Every interactive control must actually do something — no href="#" or dead buttons.
+- Write only customer-facing website copy. Never mention BuildSpec, agents, planner reasoning, backend modules,
+  implementation details, or phrases like "included because"."""
 
         try:
-            html = self.planner.generate_text(prompt, max_new_tokens=4000, temperature=0.3)
+            best_model = self.planner.best_model_name()
+            html = self.planner.generate_text(
+                prompt, max_new_tokens=16000, temperature=0.6, model=best_model, timeout=180.0,
+            )
             html = html.strip()
             if html.startswith("```"):
                 lines = html.split("\n")
@@ -1048,26 +1042,56 @@ Block 2 (wire up all forms after DOM loads):
         """Generate website code from BuildSpec, using LLM when available."""
         business = build_spec.get("business", {})
         vertical = business.get("vertical", "restaurant")
-        food_verticals = {"restaurant", "cafe", "bakery", "food", "pizzeria"}
-        is_food_business = str(vertical).lower() in food_verticals
+        context_design_spec = (
+            (agent_context or {}).get("design_spec")
+            or {}
+        )
+        visual_system = (
+            context_design_spec.get("visual_system")
+            or {}
+        )
+        if visual_system:
+            if visual_system.get("primary_color"):
+                business["primary_color"] = visual_system.get("primary_color")
+            if visual_system.get("accent_color"):
+                business["accent_color"] = visual_system.get("accent_color")
+            if visual_system.get("font_family"):
+                business["font_family"] = visual_system.get("font_family")
+        if agent_context and agent_context.get("human_answers"):
+            business["human_answers"] = agent_context.get("human_answers") or {}
         feature_keys = {
             str(feature.get("key", "")).lower()
             for feature in build_spec.get("includedFeatures", [])
         }
-        requires_commerce_preview = is_food_business
+        # Same reserve-first priority as generate_html_with_llm: a
+        # catalog_reservation feature means "one-click hold" (no cart), even
+        # though menuItems is reused generically to carry the real item list.
+        needs_reserve = "catalog_reservation" in feature_keys
+        needs_cart = (not needs_reserve) and ("online_ordering" in feature_keys or bool(build_spec.get("menuItems")))
 
         html_preview = self.generate_html_with_llm(build_spec, agent_context)
-        if requires_commerce_preview and not self._html_has_menu_cart(html_preview):
+        if not self._html_has_working_commerce_ui(html_preview, needs_cart, needs_reserve):
             logger.info(
-                "LLM preview omitted restaurant menu/cart; using deterministic commerce preview"
+                "LLM preview omitted the required cart/reserve mechanism; using deterministic commerce preview"
+            )
+            html_preview = ""
+        if not self._html_reflects_human_clarifications(
+            html_preview,
+            business.get("human_answers") or {},
+        ):
+            logger.info(
+                "LLM preview omitted human clarification content; using deterministic preview"
             )
             html_preview = ""
         if not html_preview:
             logger.info("LLM generation unavailable or failed; using static HTML preview")
             html_preview = self.generate_html_preview(build_spec)
 
-        template = self.get_template_for_vertical(vertical)
-        pages = {"index": template}
+        # No static per-vertical template here: html_preview above is the real,
+        # business-aware output. A hardcoded placeholder page previously shown
+        # here (e.g. "Repair Services / Fast and reliable repairs") had nothing
+        # to do with the actual business.
+        pages: dict[str, str] = {}
         components: dict[str, str] = {}
 
         branding = business.get("branding", {})
@@ -1099,19 +1123,47 @@ Block 2 (wire up all forms after DOM loads):
         )
 
     @staticmethod
-    def _html_has_menu_cart(html: str) -> bool:
+    def _html_has_working_commerce_ui(html: str, needs_cart: bool, needs_reserve: bool) -> bool:
+        # generate_html_with_llm's prompt no longer prescribes any specific
+        # markup/function/class names — the model designs the cart or reserve
+        # UI freely. The only thing it's required to produce is the
+        # postMessage integration hook with the matching `type`, so that's
+        # the only thing checked here. Whitespace is stripped before matching
+        # since generated JS formatting (spacing, quote style) varies freely.
+        if not needs_cart and not needs_reserve:
+            return True
+        lower = re.sub(r"\s+", "", (html or "").lower())
+        if "postmessage" not in lower:
+            return False
+        needle = "type:'order'" if needs_cart else "type:'reservation'"
+        needle_dq = needle.replace("'", '"')
+        return needle in lower or needle_dq in lower
+
+    @staticmethod
+    def _html_reflects_human_clarifications(
+        html: str,
+        human_answers: dict[str, Any],
+    ) -> bool:
+        if not human_answers:
+            return True
         lower = (html or "").lower()
-        has_menu = 'id="menu"' in lower or "id='menu'" in lower or "our menu" in lower
-        has_cart = (
-            "cart" in lower
-            and (
-                "additem" in lower
-                or "add item" in lower
-                or "add to cart" in lower
-                or "your order" in lower
-            )
-        )
-        return has_menu and has_cart
+        provider_answer = str(
+            human_answers.get("simulation_provider_credentials")
+            or ""
+        ).strip()
+        if provider_answer:
+            first_provider = provider_answer.replace("\n", ";").split(";")[0]
+            provider_name = first_provider.split(",")[0].strip().lower()
+            if provider_name and provider_name not in lower:
+                return False
+        for key in (
+            "simulation_response_timing",
+            "simulation_privacy_reassurance",
+        ):
+            answer = str(human_answers.get(key) or "").strip().lower()
+            if answer and answer not in lower:
+                return False
+        return True
 
 
 class CodeGenerationOrchestrator:

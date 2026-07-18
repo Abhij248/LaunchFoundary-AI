@@ -23,7 +23,7 @@ def business_snapshot_tool(
         "name": profile.name,
         "location": profile.location,
         "goal": profile.goal,
-        "vertical": profile.vertical.value,
+        "vertical": profile.vertical,
         "subtype": profile.subtype,
         "risk_level": profile.risk_level.value,
         "audience": profile.audience[:4],

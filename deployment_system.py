@@ -60,16 +60,141 @@ class DeploymentPackage(BaseModel):
     env_file: str = Field(default="")
 
 
+# Real SQL tables keyed by the declarative backend names each FeatureModule
+# already declares (buildspec_planner.py's FEATURE_REGISTRY[key].backend).
+# Keys like "cart", "admin_orders", "availability_slots" are admin-UI-panel
+# labels or sub-fields on an existing table, not standalone tables, and are
+# intentionally absent here (materializing nothing for them is correct).
+BACKEND_TABLE_SCHEMAS: dict[str, dict[str, Any]] = {
+    "menu_items_table": {
+        "table_name": "menu_items",
+        "fields": [
+            "id: UUID PRIMARY KEY",
+            "business_id: UUID REFERENCES business_profile(id)",
+            "name: VARCHAR(255) NOT NULL",
+            "description: TEXT",
+            "price: DECIMAL(10,2)",
+            "category: VARCHAR(100)",
+            "available: BOOLEAN DEFAULT TRUE",
+        ],
+    },
+    "orders_table": {
+        "table_name": "orders",
+        "fields": [
+            "id: UUID PRIMARY KEY",
+            "business_id: UUID REFERENCES business_profile(id)",
+            "user_id: UUID REFERENCES users(id)",
+            "total: DECIMAL(10,2)",
+            "status: VARCHAR(50) DEFAULT 'pending'",
+            "created_at: TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+        ],
+    },
+    "bookings_table": {
+        "table_name": "appointments",
+        "fields": [
+            "id: UUID PRIMARY KEY",
+            "business_id: UUID REFERENCES business_profile(id)",
+            "user_id: UUID REFERENCES users(id)",
+            "appointment_time: TIMESTAMP NOT NULL",
+            "status: VARCHAR(50) DEFAULT 'scheduled'",
+            "notes: TEXT",
+        ],
+    },
+    "reservations_table": {
+        "table_name": "reservations",
+        "fields": [
+            "id: UUID PRIMARY KEY",
+            "business_id: UUID REFERENCES business_profile(id)",
+            "user_id: UUID REFERENCES users(id)",
+            "reservation_time: TIMESTAMP NOT NULL",
+            "party_size: INT",
+            "status: VARCHAR(50) DEFAULT 'confirmed'",
+            "created_at: TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+        ],
+    },
+    "patient_intake_table": {
+        "table_name": "patient_intake",
+        "fields": [
+            "id: UUID PRIMARY KEY",
+            "business_id: UUID REFERENCES business_profile(id)",
+            "user_id: UUID REFERENCES users(id)",
+            "intake_notes: TEXT",
+            "submitted_at: TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+        ],
+    },
+    "leads_table": {
+        "table_name": "leads",
+        "fields": [
+            "id: UUID PRIMARY KEY",
+            "business_id: UUID REFERENCES business_profile(id)",
+            "name: VARCHAR(255)",
+            "email: VARCHAR(255)",
+            "phone: VARCHAR(50)",
+            "message: TEXT",
+            "status: VARCHAR(50) DEFAULT 'new'",
+            "created_at: TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+        ],
+    },
+    "quotes_table": {
+        "table_name": "quotes",
+        "fields": [
+            "id: UUID PRIMARY KEY",
+            "business_id: UUID REFERENCES business_profile(id)",
+            "user_id: UUID REFERENCES users(id)",
+            "description: TEXT",
+            "budget_range: VARCHAR(100)",
+            "timeline: VARCHAR(100)",
+            "status: VARCHAR(50) DEFAULT 'pending'",
+            "created_at: TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+        ],
+    },
+    "portfolio_items_table": {
+        "table_name": "portfolio_items",
+        "fields": [
+            "id: UUID PRIMARY KEY",
+            "business_id: UUID REFERENCES business_profile(id)",
+            "title: VARCHAR(255) NOT NULL",
+            "description: TEXT",
+            "image_url: VARCHAR(500)",
+            "display_order: INT DEFAULT 0",
+        ],
+    },
+    "catalog_items_table": {
+        "table_name": "catalog_items",
+        "fields": [
+            "id: UUID PRIMARY KEY",
+            "business_id: UUID REFERENCES business_profile(id)",
+            "title: VARCHAR(255) NOT NULL",
+            "description: TEXT",
+            "category: VARCHAR(100)",
+            "available: BOOLEAN DEFAULT TRUE",
+        ],
+    },
+    "holds_table": {
+        "table_name": "holds",
+        "fields": [
+            "id: UUID PRIMARY KEY",
+            "business_id: UUID REFERENCES business_profile(id)",
+            "user_id: UUID REFERENCES users(id)",
+            "catalog_item_id: UUID REFERENCES catalog_items(id)",
+            "status: VARCHAR(50) DEFAULT 'pending'",
+            "created_at: TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+        ],
+    },
+}
+
+
 class DatabaseSchemaGenerator:
     """Generates database schema based on BuildSpec"""
-    
+
     def generate_schema(self, build_spec: dict[str, Any]) -> DatabaseSchema:
-        """Generate database schema from BuildSpec"""
-        business = build_spec.get("business", {})
-        vertical = business.get("vertical", "unknown")
-        features = build_spec.get("includedFeatures", [])
-        
-        tables = {
+        """Generate database schema from the BuildSpec's declarative `backend`
+        table list (each FeatureModule in buildspec_planner.py's FEATURE_REGISTRY
+        already declares which tables it needs) instead of re-deriving tables
+        from hardcoded vertical-name/keyword branches. This means any feature's
+        declared backend tables materialize automatically, with no per-vertical
+        or per-feature branching required here."""
+        tables: dict[str, Any] = {
             "users": {
                 "fields": [
                     "id: UUID PRIMARY KEY",
@@ -90,101 +215,34 @@ class DatabaseSchemaGenerator:
                     "business_hours: TEXT",
                     "created_at: TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
                 ]
-            }
+            },
         }
-        
-        # Add vertical-specific tables
-        if vertical == "restaurant":
-            tables["menu_items"] = {
-                "fields": [
-                    "id: UUID PRIMARY KEY",
-                    "business_id: UUID REFERENCES business_profile(id)",
-                    "name: VARCHAR(255) NOT NULL",
-                    "description: TEXT",
-                    "price: DECIMAL(10,2)",
-                    "category: VARCHAR(100)",
-                    "available: BOOLEAN DEFAULT TRUE",
-                ]
-            }
-            tables["orders"] = {
-                "fields": [
-                    "id: UUID PRIMARY KEY",
-                    "business_id: UUID REFERENCES business_profile(id)",
-                    "user_id: UUID REFERENCES users(id)",
-                    "total: DECIMAL(10,2)",
-                    "status: VARCHAR(50) DEFAULT 'pending'",
-                    "created_at: TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
-                ]
-            }
-        elif vertical == "clinic":
-            tables["appointments"] = {
-                "fields": [
-                    "id: UUID PRIMARY KEY",
-                    "business_id: UUID REFERENCES business_profile(id)",
-                    "user_id: UUID REFERENCES users(id)",
-                    "appointment_time: TIMESTAMP NOT NULL",
-                    "status: VARCHAR(50) DEFAULT 'scheduled'",
-                    "notes: TEXT",
-                ]
-            }
-        elif vertical in ["repair_service", "service"]:
-            tables["service_requests"] = {
-                "fields": [
-                    "id: UUID PRIMARY KEY",
-                    "business_id: UUID REFERENCES business_profile(id)",
-                    "user_id: UUID REFERENCES users(id)",
-                    "description: TEXT",
-                    "status: VARCHAR(50) DEFAULT 'pending'",
-                    "priority: VARCHAR(50) DEFAULT 'normal'",
-                    "created_at: TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
-                ]
-            }
-        
-        # Add feature-specific tables
-        for feature in features:
-            feature_label = feature.get("label", "").lower()
-            if "booking" in feature_label or "appointment" in feature_label:
-                if "appointments" not in tables:
-                    tables["appointments"] = {
-                        "fields": [
-                            "id: UUID PRIMARY KEY",
-                            "business_id: UUID REFERENCES business_profile(id)",
-                            "user_id: UUID REFERENCES users(id)",
-                            "appointment_time: TIMESTAMP NOT NULL",
-                            "status: VARCHAR(50) DEFAULT 'scheduled'",
-                        ]
-                    }
-            elif "order" in feature_label:
-                if "orders" not in tables:
-                    tables["orders"] = {
-                        "fields": [
-                            "id: UUID PRIMARY KEY",
-                            "business_id: UUID REFERENCES business_profile(id)",
-                            "user_id: UUID REFERENCES users(id)",
-                            "total: DECIMAL(10,2)",
-                            "status: VARCHAR(50) DEFAULT 'pending'",
-                        ]
-                    }
-        
-        relationships = [
-            "users.id -> business_profile.user_id",
-            "business_profile.id -> menu_items.business_id",
-            "business_profile.id -> orders.business_id",
-            "business_profile.id -> appointments.business_id",
-            "business_profile.id -> service_requests.business_id",
+
+        materialized_tables: list[str] = []
+        for key in build_spec.get("backend", []):
+            schema = BACKEND_TABLE_SCHEMAS.get(key)
+            if not schema or schema["table_name"] in tables:
+                continue
+            tables[schema["table_name"]] = {"fields": schema["fields"]}
+            materialized_tables.append(schema["table_name"])
+
+        relationships = ["users.id -> business_profile.user_id"] + [
+            f"business_profile.id -> {table_name}.business_id"
+            for table_name in materialized_tables
         ]
-        
+
         indexes = [
             "CREATE INDEX idx_users_email ON users(email)",
             "CREATE INDEX idx_business_profile_user_id ON business_profile(user_id)",
-            "CREATE INDEX idx_orders_business_id ON orders(business_id)",
-            "CREATE INDEX idx_appointments_business_id ON appointments(business_id)",
+        ] + [
+            f"CREATE INDEX idx_{table_name}_business_id ON {table_name}(business_id)"
+            for table_name in materialized_tables
         ]
-        
+
         migrations = [
             "CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\"",
         ]
-        
+
         return DatabaseSchema(
             tables=tables,
             relationships=relationships,

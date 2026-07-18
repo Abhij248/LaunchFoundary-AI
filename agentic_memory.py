@@ -122,7 +122,7 @@ def build_memory_query(
     state: WebsiteAgentState,
 ) -> MemoryQuery:
     vertical = (
-        state.business_profile.vertical.value
+        state.business_profile.vertical
         if state.business_profile
         else "unknown"
     )

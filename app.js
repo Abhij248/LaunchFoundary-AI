@@ -56,8 +56,9 @@ const featureRegistry = {
   online_ordering: {
     label: "Online ordering",
     applicableTo: ["restaurant", "cafe", "bakery"],
+    applicableToShapes: ["storefront_commerce"],
     requires: ["menu_items", "business_hours"],
-    backend: ["orders_table", "cart", "order_status", "admin_orders"],
+    backend: ["menu_items_table", "orders_table", "cart", "order_status", "admin_orders"],
     qa: ["add_to_cart", "submit_order", "admin_order_visible"],
     trust: ["clear_prices", "pickup_delivery_info"],
     compliance: ["allergen_notice"],
@@ -110,6 +111,7 @@ const featureRegistry = {
       "repair_service",
       "unknown",
     ],
+    applicableToShapes: ["storefront_commerce", "scheduled_booking", "inquiry_lead", "portfolio_showcase", "catalog_reserve"],
     requires: ["contact_email"],
     backend: ["leads_table", "admin_leads"],
     qa: ["lead_form_submit", "admin_lead_visible"],
@@ -117,6 +119,42 @@ const featureRegistry = {
     compliance: [],
     impact: "medium",
     complexity: "low",
+  },
+  quote_request: {
+    label: "Quote request",
+    applicableTo: [],
+    applicableToShapes: ["inquiry_lead"],
+    requires: ["contact_email"],
+    backend: ["quotes_table", "admin_quotes"],
+    qa: ["quote_submit", "admin_quote_visible"],
+    trust: ["response_time", "phone_number"],
+    compliance: [],
+    impact: "high",
+    complexity: "low",
+  },
+  portfolio_showcase: {
+    label: "Portfolio showcase",
+    applicableTo: [],
+    applicableToShapes: ["portfolio_showcase"],
+    requires: [],
+    backend: ["portfolio_items_table", "admin_portfolio"],
+    qa: ["portfolio_item_visible"],
+    trust: ["case_study_evidence"],
+    compliance: [],
+    impact: "high",
+    complexity: "medium",
+  },
+  catalog_reservation: {
+    label: "Catalog reservation",
+    applicableTo: [],
+    applicableToShapes: ["catalog_reserve"],
+    requires: [],
+    backend: ["catalog_items_table", "holds_table", "admin_holds"],
+    qa: ["hold_submit", "admin_hold_visible"],
+    trust: ["availability_status"],
+    compliance: [],
+    impact: "high",
+    complexity: "medium",
   },
 };
 
@@ -131,6 +169,164 @@ const pagePresets = {
   consultant: ["Home", "Services", "Book Consultation", "Case Studies", "About", "Contact"],
   unknown: ["Home", "Services", "Contact"],
 };
+
+// Curated transactional "shape" a business's backend/admin/checkout needs map
+// onto. Kept deliberately small (unlike vertical, which is an open label)
+// since the DB schema, admin buckets, and cart/booking/lead-form rendering
+// need a finite set of concrete implementations to build against.
+const verticalToShape = {
+  restaurant: "storefront_commerce",
+  cafe: "storefront_commerce",
+  bakery: "storefront_commerce",
+  clinic: "scheduled_booking",
+  salon: "scheduled_booking",
+  tutor: "scheduled_booking",
+  consultant: "scheduled_booking",
+  repair_service: "inquiry_lead",
+};
+
+const businessShapeKeywords = [
+  ["storefront_commerce", ["shop", "store", "ecommerce", "e-commerce", "sell", "product", "shipping", "checkout", "retail", "boutique", "merchandise", "movie", "cinema", "theatre", "theater", "showtime", "showtimes", "ticket", "tickets", "screening", "box office"]],
+  ["portfolio_showcase", ["portfolio", "photography", "photographer", "gallery", "showcase", "creative", "design studio", "artist"]],
+  ["catalog_reserve", ["library", "librarian", "book lending", "borrow", "lending", "loan program", "rental", "equipment rental", "reserve a copy", "hold a copy", "waitlist", "checkout a book"]],
+  ["scheduled_booking", ["appointment", "booking", "schedule", "session", "class", "consultation", "visit"]],
+  ["inquiry_lead", ["quote", "inquiry", "contact us", "get in touch", "request", "estimate"]],
+];
+
+const shapePagePresets = {
+  storefront_commerce: ["Home", "Shop", "Cart", "About", "Contact"],
+  scheduled_booking: ["Home", "Services", "Book Now", "About", "Contact"],
+  inquiry_lead: ["Home", "Services", "Request a Quote", "About", "Contact"],
+  portfolio_showcase: ["Home", "Portfolio", "About", "Contact"],
+  catalog_reserve: ["Home", "Catalog", "My Holds", "About", "Contact"],
+};
+
+function classifyBusinessShape(rawInput, verticalAnalysis) {
+  const vertical = verticalAnalysis.vertical;
+  if (verticalToShape[vertical]) return verticalToShape[vertical];
+
+  const text = (rawInput || "").toLowerCase();
+  let bestShape = null;
+  let bestScore = -1;
+  for (const [shape, keywords] of businessShapeKeywords) {
+    const score = keywords.reduce((count, kw) => count + (text.includes(kw) ? 1 : 0), 0);
+    if (score > bestScore) {
+      bestScore = score;
+      bestShape = shape;
+    }
+  }
+  return bestScore > 0 ? bestShape : "inquiry_lead";
+}
+
+// Shape-driven copy for the "Website" tab's design system — mirrors
+// code_generator.py's mood/commerce_copy system on the Python side. Replaces
+// a closed 3-way vertical switch (food / clinic / generic-service) that
+// branded every non-food/non-clinic business (theatre, library, portfolio,
+// e-commerce, salon, tutor...) identically, since none of them matched
+// either of the two special-cased verticals.
+const SHAPE_COPY = {
+  storefront_commerce: {
+    hero: "A storefront-ready ordering experience with a browsable catalog, cart, and checkout flow.",
+    visual: { className: "restaurant-hero", cardTitle: "Revenue Stack", cardBody: "Catalog, cart, checkout, and admin operations are generated as one system." },
+    tiles: [
+      { title: "Browse To Cart", body: "Items are arranged around immediate add-to-cart actions and clear pricing." },
+      { title: "Checkout Flow", body: "Orders are routed into an owner dashboard so the site supports real operations." },
+      { title: "Local Trust", body: "Hours, location, and pricing clarity are treated as launch-critical trust signals." },
+    ],
+    proof: "The generated storefront connects customer actions to owner operations through orders and QA checks.",
+    qa: {
+      visual: "Detected catalog/cart content competing with hero copy, then grouped actions into a revenue stack.",
+      conversion: "Cart and checkout flows are visible and connected to owner operations.",
+      compliance: "Pricing clarity and applicable notices were checked before launch readiness scoring.",
+    },
+    primaryAction: { label: "Order Now", kind: "order" },
+  },
+  scheduled_booking: {
+    hero: "A client-ready digital front desk with appointments, intake, and trust signals.",
+    visual: { className: "clinic-hero", cardTitle: "Booking Stack", cardBody: "Services, booking flow, and intake are planned together." },
+    tiles: [
+      { title: "Care Pathways", body: "Services are grouped around client intent so the right next step is obvious." },
+      { title: "Book + Intake", body: "Booking and intake feed the same admin schedule instead of becoming dead-end forms." },
+      { title: "Compliance Guardrails", body: "Sensitive claims are restrained and privacy language is present where relevant." },
+    ],
+    proof: "The site is not just client-facing UI; it includes booking intake, admin visibility, and QA checks.",
+    qa: {
+      visual: "Detected weak booking CTA hierarchy, then promoted booking above other actions.",
+      conversion: "Primary booking action is available in hero and connected to the generated schedule backend.",
+      compliance: "Sensitive-claim wording checked; privacy notice included where relevant.",
+    },
+    primaryAction: { label: "Book Appointment", kind: "booking" },
+  },
+  inquiry_lead: {
+    hero: "A service-ready website with quote capture, clear offerings, and a generated owner workflow.",
+    visual: { className: "service-hero", cardTitle: "Lead Stack", cardBody: "Service pages, trust signals, quote capture, and owner follow-up are connected." },
+    tiles: [
+      { title: "Service Clarity", body: "The homepage explains what the business does, who it serves, and what action to take." },
+      { title: "Quote Capture", body: "Requests are collected with enough context for the owner to respond quickly." },
+      { title: "Owner Workflow", body: "Leads appear in the generated admin area so the website becomes an operating surface." },
+    ],
+    proof: "Customer requests are captured, organised, and verified through the generated admin workflow.",
+    qa: {
+      visual: "Detected generic service cards, then rewrote them around customer intent and quote capture.",
+      conversion: "Request flow is reachable from the hero and stored in the generated lead dashboard.",
+      compliance: "Risk language reviewed for the selected business category.",
+    },
+    primaryAction: { label: "Request Quote", kind: "lead" },
+  },
+  portfolio_showcase: {
+    hero: "A portfolio-first website that leads with visual work and turns interest into inquiries.",
+    visual: { className: "service-hero", cardTitle: "Showcase Stack", cardBody: "Portfolio, testimonials, and inquiry capture are connected." },
+    tiles: [
+      { title: "Visual Storytelling", body: "Past work leads the homepage so visitors see quality before anything else." },
+      { title: "Proof Of Work", body: "Case studies and testimonials build confidence before an inquiry is sent." },
+      { title: "Inquiry Workflow", body: "Interested visitors land in the generated admin area as qualified leads." },
+    ],
+    proof: "The generated portfolio connects visual proof to a real inquiry workflow and QA checks.",
+    qa: {
+      visual: "Detected thin visual proof, then prioritised gallery and case-study placement.",
+      conversion: "Inquiry path is reachable directly from the portfolio, not buried in navigation.",
+      compliance: "Client-facing claims reviewed for accuracy.",
+    },
+    primaryAction: { label: "Get In Touch", kind: "lead" },
+  },
+  catalog_reserve: {
+    hero: "A catalog-ready website where visitors browse and reserve items without needing an account or payment.",
+    visual: { className: "clinic-hero", cardTitle: "Catalog Stack", cardBody: "Catalog browsing, holds, and admin visibility are planned together." },
+    tiles: [
+      { title: "Browse The Catalog", body: "Items are organised so visitors can find what they want quickly." },
+      { title: "One-Click Holds", body: "Reserving an item is a single action — no cart, no payment, no friction." },
+      { title: "Availability Signals", body: "Availability status is shown clearly so expectations are set upfront." },
+    ],
+    proof: "The generated catalog connects browsing to real holds and admin visibility through QA checks.",
+    qa: {
+      visual: "Detected unclear availability signals, then made hold status explicit on every item.",
+      conversion: "Reserve action is available directly from each catalog item.",
+      compliance: "Access and eligibility language reviewed for accuracy.",
+    },
+    primaryAction: { label: "Reserve", kind: "lead" },
+  },
+};
+
+function resolveBusinessShape(spec) {
+  return (
+    spec?.businessShape ||
+    verticalToShape[spec?.business?.vertical] ||
+    "inquiry_lead"
+  );
+}
+
+function shapeCopy(spec) {
+  return SHAPE_COPY[resolveBusinessShape(spec)] || SHAPE_COPY.inquiry_lead;
+}
+
+const DEFAULT_CATEGORIES_BY_SHAPE = {
+  storefront_commerce: ["Popular", "Offers", "New"],
+  catalog_reserve: ["New Arrivals", "Popular", "Available Now"],
+};
+
+function defaultCategoriesFor(spec) {
+  return DEFAULT_CATEGORIES_BY_SHAPE[resolveBusinessShape(spec)] || ["Popular", "Featured", "New"];
+}
 
 const verticalKeywords = [
   ["restaurant", ["restaurant", "diner", "bistro", "pizzeria", "food", "kitchen", "menu", "reservation", "catering", "pizza", "pasta"]],
@@ -164,6 +360,8 @@ let state = {
   clarificationQuestions: [],
   pendingClarification: null,
   assumptions: [],
+  humanAnswers: {},
+  graphResumeState: null,
   isGenerating: false,
   resolveClarification: null,
 };
@@ -722,6 +920,86 @@ function waitForClarification() {
   });
 }
 
+function requestHumanClarifications(questions) {
+  return new Promise((resolve) => {
+    const normalized =
+      (questions || []).length
+        ? questions
+        : [
+            {
+              question_id: "general_clarification",
+              question:
+                "What should the generated website clarify before continuing?",
+              options: [],
+            },
+          ];
+
+    let container = document.querySelector(
+      "#clarificationPopup",
+    );
+
+    if (!container) {
+      container = document.createElement("div");
+      container.id = "clarificationPopup";
+      container.className = "clarification-popup";
+      document.body.appendChild(container);
+    }
+
+    container.innerHTML = `
+      <div class="clarification-card human-loop-card">
+        <div class="chip">Human-in-loop pause</div>
+        <h3>The agents need a little more context</h3>
+        <p>Answer what you can. The graph will resume with these details.</p>
+        <form id="humanLoopForm" class="human-loop-form">
+          ${normalized
+            .map((question, index) => {
+              const id =
+                question.question_id ||
+                question.id ||
+                `clarification_${index + 1}`;
+              const options =
+                question.options || [];
+              return `
+                <label>
+                  <span>${escapeHtml(question.question || "Clarification needed")}</span>
+                  ${
+                    options.length
+                      ? `<select name="${escapeHtml(id)}">
+                          ${options
+                            .map(
+                              (option) =>
+                                `<option value="${escapeHtml(option)}">${escapeHtml(option)}</option>`,
+                            )
+                            .join("")}
+                        </select>`
+                      : `<textarea name="${escapeHtml(id)}" rows="3" placeholder="Type the missing detail"></textarea>`
+                  }
+                </label>
+              `;
+            })
+            .join("")}
+          <button class="primary-button" type="submit">Resume Generation</button>
+        </form>
+      </div>
+    `;
+
+    container
+      .querySelector("#humanLoopForm")
+      .addEventListener("submit", (event) => {
+        event.preventDefault();
+        const answers = Object.fromEntries(
+          Array.from(
+            new FormData(event.currentTarget).entries(),
+          ).filter(([, value]) =>
+            String(value || "").trim().length,
+          ),
+        );
+        container.remove();
+        resolve(answers);
+      });
+  });
+}
+
 function applyClarificationAnswer(
   question,
   answer,
@@ -827,7 +1105,13 @@ function classifyVertical(raw) {
 function detectFields(profile, raw) {
   const text = raw.toLowerCase();
   const fields = new Set(Object.keys(profile));
-  if (["menu", "pizza", "pasta", "coffee", "service", "brochure", "flyer"].some((word) => text.includes(word))) fields.add("menu_items");
+  if (
+    [
+      "menu", "pizza", "pasta", "coffee", "service", "brochure", "flyer",
+      "product", "catalog", "merchandise", "sell", "shop", "store",
+      "ticket", "show", "snack",
+    ].some((word) => text.includes(word))
+  ) fields.add("menu_items");
   if (text.includes("hour") || text.includes("open")) fields.add("business_hours");
   if (text.includes("email") || profile.contact_email) fields.add("contact_email");
   if (text.includes("phone") || profile.phone) fields.add("phone_number");
@@ -835,13 +1119,15 @@ function detectFields(profile, raw) {
   return fields;
 }
 
-function selectFeatures(vertical, availableFields) {
+function selectFeatures(vertical, availableFields, shape = "") {
   const included = [];
   const skipped = [];
   const missing = new Set();
 
   Object.entries(featureRegistry).forEach(([key, feature]) => {
-    if (!feature.applicableTo.includes(vertical) && !feature.applicableTo.includes("unknown")) return;
+    const appliesByVertical = feature.applicableTo.includes(vertical) || feature.applicableTo.includes("unknown");
+    const appliesByShape = Boolean(shape) && (feature.applicableToShapes || []).includes(shape);
+    if (!appliesByVertical && !appliesByShape) return;
 
     const unmet = feature.requires.filter((field) => !availableFields.has(field));
     const decision = {
@@ -862,9 +1148,10 @@ function selectFeatures(vertical, availableFields) {
         reason: `Skipped because missing required info: ${unmet.join(", ")}`,
       });
     } else {
+      const reasonSubject = appliesByVertical ? vertical.replaceAll("_", " ") : shape.replaceAll("_", " ");
       included.push({
         ...decision,
-        reason: `Included because it is high-value for ${vertical.replaceAll("_", " ")} businesses.`,
+        reason: `Included because it is high-value for ${reasonSubject} businesses.`,
       });
     }
   });
@@ -916,8 +1203,12 @@ function generateBuildSpec() {
   };
   const raw = [document.querySelector("#businessDetails").value, state.extractedAssetText].filter(Boolean).join("\n\n");
   const analysis = classifyVertical(raw);
+  const shape = classifyBusinessShape(raw, analysis);
+  if (analysis.vertical === "unknown") {
+    analysis.subtype = `${shape.replaceAll("_", " ")} business`;
+  }
   const fields = detectFields(profile, raw);
-  const selected = selectFeatures(analysis.vertical, fields);
+  const selected = selectFeatures(analysis.vertical, fields, shape);
   const backend = uniqueFromFeatures(selected.included, "backend");
   const trust = uniqueFromFeatures(selected.included, "trust");
   const compliance = uniqueFromFeatures(selected.included, "compliance");
@@ -931,7 +1222,8 @@ function generateBuildSpec() {
       goal: profile.goal,
       ...analysis,
     },
-    pages: pagePresets[analysis.vertical] || pagePresets.unknown,
+    businessShape: shape,
+    pages: (analysis.vertical !== "unknown" && pagePresets[analysis.vertical]) || shapePagePresets[shape] || pagePresets.unknown,
     includedFeatures: selected.included,
     skippedFeatures: selected.skipped,
     missingInfo: selected.missing,
@@ -1028,94 +1320,19 @@ function renderTimeline(spec) {
 }
 
 function heroCopy(spec) {
-  if (spec.business.vertical === "clinic") {
-    return "A patient-ready digital front desk with appointments, intake, trust signals, and compliance-aware language.";
-  }
-  if (["restaurant", "cafe", "bakery"].includes(spec.business.vertical)) {
-    return "A local food ordering system with a polished storefront, reservation path, menu structure, and owner dashboard.";
-  }
-  return "A service-ready website with quote capture, clear offerings, trust signals, and a generated owner workflow.";
+  return shapeCopy(spec).hero;
 }
 
-function verticalVisual(vertical) {
-  if (vertical === "clinic") {
-    return {
-      className: "clinic-hero",
-      cardTitle: "Patient Trust Stack",
-      cardBody: "Doctor profiles, privacy notice, intake workflow, and appointment confirmation are planned together.",
-    };
-  }
-  if (["restaurant", "cafe", "bakery"].includes(vertical)) {
-    return {
-      className: "restaurant-hero",
-      cardTitle: "Revenue Stack",
-      cardBody: "Menu, order flow, reservation flow, opening hours, and admin operations are generated as one system.",
-    };
-  }
-  return {
-    className: "service-hero",
-    cardTitle: "Lead Stack",
-    cardBody: "Service pages, trust signals, quote capture, and owner follow-up workflow are connected.",
-  };
+function verticalVisual(spec) {
+  return shapeCopy(spec).visual;
 }
 
 function verticalTiles(spec) {
-  if (spec.business.vertical === "clinic") {
-    return [
-      {
-        title: "Care Pathways",
-        body: "Services are grouped around patient intent: routine care, urgent care, cosmetic care, and family care.",
-      },
-      {
-        title: "Book + Intake",
-        body: "Appointment booking and patient intake feed the same admin schedule instead of becoming dead-end forms.",
-      },
-      {
-        title: "Compliance Guardrails",
-        body: "Medical claims are restrained, privacy language is present, and diagnosis promises are avoided.",
-      },
-    ];
-  }
-  if (["restaurant", "cafe", "bakery"].includes(spec.business.vertical)) {
-    return [
-      {
-        title: "Menu To Action",
-        body: "Menu items are arranged around immediate ordering, pickup expectations, and clear customer choices.",
-      },
-      {
-        title: "Reservations",
-        body: "Table requests are routed into an owner dashboard so the site supports real service operations.",
-      },
-      {
-        title: "Local Trust",
-        body: "Hours, location, pricing clarity, and allergen notice are treated as launch-critical trust signals.",
-      },
-    ];
-  }
-  return [
-    {
-      title: "Service Clarity",
-      body: "The homepage explains what the business does, who it serves, and what action customers should take.",
-    },
-    {
-      title: "Quote Capture",
-      body: "Requests are collected with enough context for the owner to respond quickly and prioritise work.",
-    },
-    {
-      title: "Owner Workflow",
-      body: "Leads appear in the generated admin area so the website becomes an operating surface.",
-    },
-  ];
+  return shapeCopy(spec).tiles;
 }
 
 function systemProofCopy(spec) {
-  if (spec.business.vertical === "clinic") {
-    return "The site is not just patient-facing UI; it includes appointment intake, admin visibility, and regulated copy checks.";
-  }
-  if (["restaurant", "cafe", "bakery"].includes(spec.business.vertical)) {
-    return "The generated storefront connects customer actions to owner operations through orders, reservations, and QA checks.";
-  }
-  return "Customer requests are captured, organised, and verified through the generated admin workflow.";
+  return shapeCopy(spec).proof;
 }
 
 function renderAdmin() {
@@ -1128,14 +1345,30 @@ window.addEventListener("message", function (event) {
   const d = event.data;
   if (!d || !d.type) return;
   const now = new Date().toLocaleTimeString();
+  // Unified contract: any generated page (however it's built) reports a
+  // submission as {type, summary, customer, contact} — accepts the older
+  // per-type field names too (order/guests+date/message/email/phone) so
+  // pages built against the previous rigid template still work.
+  const record = {
+    customer: d.customer || d.name || "Customer",
+    request:
+      d.summary ||
+      d.order ||
+      (d.guests || d.date ? `${d.guests || 1} guest(s) on ${d.date || "TBD"}` : "") ||
+      d.message ||
+      d.request ||
+      "",
+    contact: d.contact || d.email || d.phone || "",
+    time: now,
+  };
   if (d.type === "order") {
-    state.orders.unshift({ customer: d.customer || "Customer", request: d.order || d.request || "", contact: d.phone || d.contact || "", time: now });
+    state.orders.unshift(record);
     renderAdmin();
   } else if (d.type === "reservation") {
-    state.bookings.unshift({ customer: d.customer || "Guest", request: `${d.guests || 1} guest(s) on ${d.date || "TBD"}`, contact: d.email || "", time: now });
+    state.bookings.unshift(record);
     renderAdmin();
   } else if (d.type === "lead") {
-    state.leads.unshift({ customer: d.customer || "Visitor", request: d.message || d.request || "", contact: d.contact || d.email || "", time: now });
+    state.leads.unshift(record);
     renderAdmin();
   }
 });
@@ -1193,25 +1426,7 @@ function renderQa(spec) {
 }
 
 function qaFixesFor(spec) {
-  if (spec.business.vertical === "clinic") {
-    return {
-      visual: "Detected weak appointment CTA hierarchy on mobile, then promoted booking above intake.",
-      conversion: "Primary booking action is available in hero and connected to generated schedule backend.",
-      compliance: "Medical outcome wording checked; privacy notice and no-diagnosis guardrails included.",
-    };
-  }
-  if (["restaurant", "cafe", "bakery"].includes(spec.business.vertical)) {
-    return {
-      visual: "Detected menu/order content competing with hero copy, then grouped actions into a revenue stack.",
-      conversion: "Order and reservation flows are both visible and connected to owner operations.",
-      compliance: "Allergen and pricing clarity checks were applied before launch readiness scoring.",
-    };
-  }
-  return {
-    visual: "Detected generic service cards, then rewrote them around customer intent and quote capture.",
-    conversion: "Request flow is reachable from the hero and stored in the generated lead dashboard.",
-    compliance: "Risk language reviewed for the selected business category.",
-  };
+  return shapeCopy(spec).qa;
 }
 
 async function requestLiveBuildSpec() {
@@ -1226,6 +1441,8 @@ async function requestLiveBuildSpec() {
       body: JSON.stringify({
         business_input: getBusinessProfileInput(),
         asset_extractions: state.assetExtractions,
+        human_answers: state.humanAnswers || {},
+        resume_state: state.graphResumeState || null,
       }),
     },
   );
@@ -1247,7 +1464,7 @@ async function requestLiveBuildSpec() {
   let buffer = "";
   let finalPayload = null;
 
-  const processSseBlock = (block) => {
+  const processSseBlock = async (block) => {
     const lines = block.split(/\r?\n/);
     let eventName = "message";
     const dataLines = [];
@@ -1260,7 +1477,7 @@ async function requestLiveBuildSpec() {
       }
     }
 
-    if (!dataLines.length) return;
+    if (!dataLines.length) return false;
 
     const payload = JSON.parse(
       dataLines.join("\n"),
@@ -1272,7 +1489,7 @@ async function requestLiveBuildSpec() {
         payload.message || "Live graph execution started.",
         "active",
       );
-      return;
+      return false;
     }
 
     if (eventName === "buildspec") {
@@ -1287,14 +1504,40 @@ async function requestLiveBuildSpec() {
       state.spec =
         payload.buildSpec ||
         generateBuildSpec();
-      return;
+      return false;
     }
 
     if (eventName === "graph_update") {
       const event = payload.event || {};
       state.graphEvents.push(event);
       renderGraphEvent(event);
-      return;
+      return false;
+    }
+
+    if (eventName === "human_input_required") {
+      state.graphResumeState =
+        payload.resume_state || null;
+      pushTimelineEvent(
+        "Human-in-loop Agent",
+        payload.message || "Planner paused for clarification.",
+        "paused",
+      );
+      const answers =
+        await requestHumanClarifications(
+          payload.questions || [],
+        );
+      state.humanAnswers = {
+        ...(state.humanAnswers || {}),
+        ...answers,
+      };
+      pushTimelineEvent(
+        "Human-in-loop Agent",
+        "Clarification received. Resuming graph with updated context.",
+        "resuming",
+      );
+      await reader.cancel();
+      finalPayload = await requestLiveBuildSpec();
+      return true;
     }
 
     if (eventName === "graph_error") {
@@ -1303,12 +1546,14 @@ async function requestLiveBuildSpec() {
         payload.error || "Planner graph switched to fallback mode.",
         "warning",
       );
-      return;
+      return false;
     }
 
     if (eventName === "complete") {
+      state.graphResumeState = null;
       finalPayload = payload;
     }
+    return false;
   };
 
   while (true) {
@@ -1327,14 +1572,22 @@ async function requestLiveBuildSpec() {
 
     for (const block of blocks) {
       if (block.trim()) {
-        processSseBlock(block);
+        const shouldRestart =
+          await processSseBlock(block);
+        if (shouldRestart) {
+          return finalPayload;
+        }
       }
     }
   }
 
   buffer += decoder.decode();
   if (buffer.trim()) {
-    processSseBlock(buffer);
+    const shouldRestart =
+      await processSseBlock(buffer);
+    if (shouldRestart) {
+      return finalPayload;
+    }
   }
 
   if (!finalPayload) {
@@ -1354,6 +1607,7 @@ async function runDemo() {
   try {
     state.timelineEvents = [];
     state.graphEvents = [];
+    state.graphResumeState = null;
     state._evolutionCritiquePushed = false;
     state._evolutionSimPushed = false;
     document
@@ -1399,6 +1653,8 @@ async function runDemo() {
       result?.graphExecution?.events ||
       state.graphEvents ||
       [];
+    state.graphExecution =
+      result?.graphExecution || null;
     state.graphStatus =
       result?.graphStatus ||
       {
@@ -1902,8 +2158,12 @@ function buildCombinedAssetSignals(extractions) {
 function generateBuildSpecFromAmdPayload(profile, businessDetails, assetSignals) {
   const raw = [businessDetails, assetSignals].filter(Boolean).join("\n\n");
   const analysis = classifyVertical(raw);
+  const shape = classifyBusinessShape(raw, analysis);
+  if (analysis.vertical === "unknown") {
+    analysis.subtype = `${shape.replaceAll("_", " ")} business`;
+  }
   const fields = detectFields(profile, raw);
-  const selected = selectFeatures(analysis.vertical, fields);
+  const selected = selectFeatures(analysis.vertical, fields, shape);
   const backend = uniqueFromFeatures(selected.included, "backend");
   const trust = uniqueFromFeatures(selected.included, "trust");
   const compliance = uniqueFromFeatures(selected.included, "compliance");
@@ -1917,7 +2177,8 @@ function generateBuildSpecFromAmdPayload(profile, businessDetails, assetSignals)
       goal: profile.goal,
       ...analysis,
     },
-    pages: pagePresets[analysis.vertical] || pagePresets.unknown,
+    businessShape: shape,
+    pages: (analysis.vertical !== "unknown" && pagePresets[analysis.vertical]) || shapePagePresets[shape] || pagePresets.unknown,
     includedFeatures: selected.included,
     skippedFeatures: selected.skipped,
     missingInfo: selected.missing,
@@ -2083,59 +2344,71 @@ function formatInsightPrice(value) {
   return String(value);
 }
 
+const DESIGN_BRIEF_BY_SHAPE = {
+  storefront_commerce: (ctx) =>
+    ctx.hasStrongOffers
+      ? "Lead with an offer-driven storefront, then move quickly into dense browsing UI with strong imagery and price visibility."
+      : "Lead with visuals and social proof, then present a dense catalog-first layout with immediate action paths.",
+  scheduled_booking: () => "Prioritise trust, credentials, and booking conversion before deeper service detail.",
+  inquiry_lead: () => "Prioritise service clarity and lead capture, supported by trust signals and operational readiness.",
+  portfolio_showcase: () => "Lead with visual proof of work, then guide interested visitors toward an inquiry.",
+  catalog_reserve: () => "Prioritise easy browsing and clear availability, then make reserving an item effortless.",
+};
+
+const DESIGN_VISUAL_BY_SHAPE = {
+  storefront_commerce: (ctx) => ({
+    tone: ctx.hasStrongOffers ? "fast-casual and promotional" : "storefront and trustworthy",
+    density: ctx.hasRichCatalog ? "high" : "medium",
+    mediaBias: ctx.hasVisualAssets ? "image-heavy" : "content-heavy",
+    trustEmphasis: "medium", primaryColor: "#9f2f22", accentColor: "#e4a12f", surfaceColor: "#fff8ef", fontFamily: "Inter",
+  }),
+  scheduled_booking: () => ({ tone: "calm and credible", density: "medium", mediaBias: "trust-first", trustEmphasis: "high", primaryColor: "#0f766e", accentColor: "#38bdf8", surfaceColor: "#f4fbfb", fontFamily: "Inter" }),
+  inquiry_lead: () => ({ tone: "clear and pragmatic", density: "medium", mediaBias: "copy-first", trustEmphasis: "medium", primaryColor: "#334155", accentColor: "#f59e0b", surfaceColor: "#f8fafc", fontFamily: "Inter" }),
+  portfolio_showcase: () => ({ tone: "editorial and confident", density: "medium", mediaBias: "image-heavy", trustEmphasis: "medium", primaryColor: "#171717", accentColor: "#d4af37", surfaceColor: "#fafafa", fontFamily: "Inter" }),
+  catalog_reserve: () => ({ tone: "calm and organised", density: "medium", mediaBias: "content-heavy", trustEmphasis: "high", primaryColor: "#1e3a5f", accentColor: "#38bdf8", surfaceColor: "#f4fbfb", fontFamily: "Inter" }),
+};
+
+const DESIGN_PAGES_BY_SHAPE = {
+  storefront_commerce: (ctx) => [{
+    name: "Home", pageType: "home",
+    sections: [
+      { type: "hero_offer_banner", purpose: "Lead with the main commercial hook." },
+      { type: "insights", purpose: "Show extracted AMD insights." },
+      { type: ctx.hasVisualAssets ? "gallery_strip" : "page_nav", purpose: "Support browsing." },
+      { type: ctx.hasRichCatalog ? "menu_showcase" : "feature_grid", purpose: "Display the core offer." },
+      { type: "proof_band", purpose: "Support conversion confidence." },
+      { type: "primary_workflow_form", purpose: "Capture order intent." },
+    ],
+  }],
+  catalog_reserve: (ctx) => [{
+    name: "Home", pageType: "home",
+    sections: [
+      { type: "hero_trust_banner", purpose: "Lead with a calm, informative hook." },
+      { type: "insights", purpose: "Show extracted AMD insights." },
+      { type: ctx.hasRichCatalog ? "menu_showcase" : "feature_grid", purpose: "Display the catalog." },
+      { type: "proof_band", purpose: "Support confidence in availability." },
+      { type: "primary_workflow_form", purpose: "Capture reservation intent." },
+    ],
+  }],
+};
+const DEFAULT_DESIGN_PAGES = [{ name: "Home", pageType: "home", sections: [{ type: "hero_trust_banner" }, { type: "insights" }, { type: "page_nav" }, { type: "feature_grid" }, { type: "proof_band" }, { type: "primary_workflow_form" }] }];
+
 function generateDesignSpec(spec) {
-  const vertical = spec.business.vertical;
+  const shape = resolveBusinessShape(spec);
+  const copy = shapeCopy(spec);
   const restaurant = buildRestaurantExperienceData();
-  const hasStrongOffers = restaurant.offers.length > 0;
-  const hasRichMenu = restaurant.items.length >= 6;
-  const hasVisualAssets = state.assets.length >= 2;
-
-  if (["restaurant", "cafe", "bakery"].includes(vertical)) {
-    return {
-      brief: hasStrongOffers
-        ? "Lead with an offer-driven food storefront, then move quickly into dense ordering UI with strong imagery and price visibility."
-        : "Lead with food visuals and social proof, then present a dense menu-first ordering layout with immediate action paths.",
-      visual: {
-        tone: hasStrongOffers ? "fast-casual and promotional" : "food-forward and trustworthy",
-        density: hasRichMenu ? "high" : "medium",
-        mediaBias: hasVisualAssets ? "image-heavy" : "content-heavy",
-        trustEmphasis: "medium",
-      },
-      primaryAction: { label: "Order Now", kind: "order", placements: ["hero", "section_end"] },
-      pages: [
-        {
-          name: "Home",
-          pageType: "home",
-          sections: [
-            { type: "hero_offer_banner", purpose: "Lead with the main commercial hook." },
-            { type: "insights", purpose: "Show extracted AMD insights." },
-            { type: hasVisualAssets ? "gallery_strip" : "page_nav", purpose: "Support browsing." },
-            { type: hasRichMenu ? "menu_showcase" : "feature_grid", purpose: "Display the core offer." },
-            { type: "proof_band", purpose: "Support conversion confidence." },
-            { type: "primary_workflow_form", purpose: "Capture order intent." },
-          ],
-        },
-      ],
-      decisionRationale: ["Restaurant flow prioritised ordering speed and visual appetite."],
-    };
-  }
-
-  if (vertical === "clinic") {
-    return {
-      brief: "Prioritise trust, credentials, and appointment conversion before deeper service detail.",
-      visual: { tone: "calm and credible", density: "medium", mediaBias: "trust-first", trustEmphasis: "high" },
-      primaryAction: { label: "Book Appointment", kind: "booking", placements: ["hero", "section_end"] },
-      pages: [{ name: "Home", pageType: "home", sections: [{ type: "hero_trust_banner" }, { type: "insights" }, { type: "page_nav" }, { type: "feature_grid" }, { type: "proof_band" }, { type: "primary_workflow_form" }] }],
-      decisionRationale: ["Clinic flow prioritised reassurance and trust before booking."],
-    };
-  }
+  const ctx = {
+    hasStrongOffers: restaurant.offers.length > 0,
+    hasRichCatalog: restaurant.items.length >= 6,
+    hasVisualAssets: state.assets.length >= 2,
+  };
 
   return {
-    brief: "Prioritise service clarity and lead capture, supported by trust signals and operational readiness.",
-    visual: { tone: "clear and pragmatic", density: "medium", mediaBias: "copy-first", trustEmphasis: "medium" },
-    primaryAction: { label: "Request Quote", kind: "lead", placements: ["hero", "section_end"] },
-    pages: [{ name: "Home", pageType: "home", sections: [{ type: "hero_trust_banner" }, { type: "insights" }, { type: "page_nav" }, { type: "feature_grid" }, { type: "proof_band" }, { type: "primary_workflow_form" }] }],
-    decisionRationale: ["Service flow prioritised clarity and quote capture."],
+    brief: (DESIGN_BRIEF_BY_SHAPE[shape] || DESIGN_BRIEF_BY_SHAPE.inquiry_lead)(ctx),
+    visual: (DESIGN_VISUAL_BY_SHAPE[shape] || DESIGN_VISUAL_BY_SHAPE.inquiry_lead)(ctx),
+    primaryAction: { ...copy.primaryAction, placements: ["hero", "section_end"] },
+    pages: (DESIGN_PAGES_BY_SHAPE[shape] || (() => DEFAULT_DESIGN_PAGES))(ctx),
+    decisionRationale: [`${shape.replaceAll("_", " ")} flow prioritised ${copy.primaryAction.label.toLowerCase()}.`],
   };
 }
 
@@ -2203,7 +2476,13 @@ function renderWebsiteDynamic(spec, designSpec) {
       designSpec,
       restaurant,
     );
+  designSpec =
+    ensureClinicHumanLoopDesign(
+      spec,
+      designSpec,
+    );
   const visual = designAwareVisual(spec, designSpec);
+  applyGeneratedDesignTheme(designSpec);
 
   const pages =
     (designSpec.pages || []).length
@@ -2424,7 +2703,7 @@ function renderDesignSection(section, spec, designSpec, restaurant) {
     case "page_nav":
       return "";
     case "category_strip":
-      return renderCategoryStripSection(restaurant, sectionPurpose);
+      return renderCategoryStripSection(spec, restaurant, sectionPurpose);
     case "gallery_strip":
       return `
         <div class="restaurant-topbar">
@@ -2459,6 +2738,10 @@ function renderDesignSection(section, spec, designSpec, restaurant) {
           </div>
         </section>
       `;
+    case "provider_profile":
+    case "provider_profiles":
+    case "team_credentials":
+      return renderProviderProfileSection(spec);
     case "primary_workflow_form":
     case "order_form":
       return renderPrimaryWorkflowForm(spec, designSpec, restaurant);
@@ -2467,15 +2750,60 @@ function renderDesignSection(section, spec, designSpec, restaurant) {
   }
 }
 
+function applyGeneratedDesignTheme(designSpec) {
+  const preview =
+    document.querySelector("#sitePreview");
+  if (!preview) return;
+  const visual = designSpec.visual || {};
+  preview.style.setProperty(
+    "--accent",
+    visual.primaryColor || "#0d7c66",
+  );
+  preview.style.setProperty(
+    "--accent-dark",
+    darkenHexColor(
+      visual.primaryColor || "#0d7c66",
+    ),
+  );
+  preview.style.setProperty(
+    "--gold",
+    visual.accentColor || "#d99b28",
+  );
+  preview.style.setProperty(
+    "--soft",
+    visual.surfaceColor || "#f7faf8",
+  );
+  preview.style.fontFamily =
+    `${visual.fontFamily || "Inter"}, system-ui, sans-serif`;
+}
+
+function darkenHexColor(hex) {
+  const clean =
+    String(hex || "").replace("#", "");
+  if (!/^[0-9a-fA-F]{6}$/.test(clean)) {
+    return "#075e4d";
+  }
+  const values = [0, 2, 4].map((start) =>
+    Math.max(
+      0,
+      Math.round(parseInt(clean.slice(start, start + 2), 16) * 0.72),
+    )
+      .toString(16)
+      .padStart(2, "0"),
+  );
+  return `#${values.join("")}`;
+}
+
 function ensureRestaurantCommerceDesign(spec, designSpec, restaurant) {
   const effective =
     designSpec || generateDesignSpec(spec);
-  const vertical =
-    String(spec.business?.vertical || "").toLowerCase();
-  const isFoodBusiness =
-    ["restaurant", "cafe", "bakery", "food", "pizzeria"].includes(vertical);
+  // Was gated on a hardcoded food-vertical name list, so a theatre/e-commerce
+  // store/anything else with a real online_ordering feature never got its
+  // commerce section injected at all — gate on the shape instead, which is
+  // exactly what online_ordering is already scoped to (see buildspec_planner.py).
+  const isCommerceShape = resolveBusinessShape(spec) === "storefront_commerce";
 
-  if (!isFoodBusiness) {
+  if (!isCommerceShape) {
     return effective;
   }
 
@@ -2616,6 +2944,141 @@ function ensureRestaurantCommerceDesign(spec, designSpec, restaurant) {
   }
 
   return effective;
+}
+
+function ensureClinicHumanLoopDesign(spec, designSpec) {
+  const effective =
+    designSpec || generateDesignSpec(spec);
+  const vertical =
+    String(spec.business?.vertical || "").toLowerCase();
+  const isClinic =
+    ["clinic", "dental", "doctor", "medical", "health"].includes(vertical);
+  const providerAnswer =
+    String(
+      state.humanAnswers?.simulation_provider_credentials || "",
+    ).trim();
+
+  if (!isClinic || !providerAnswer) {
+    return effective;
+  }
+
+  if (!Array.isArray(effective.pages) || !effective.pages.length) {
+    effective.pages = [
+      {
+        name: "Home",
+        title: "Home",
+        pageType: "home",
+        sections: [],
+      },
+    ];
+  }
+
+  const targetPage =
+    effective.pages.find((page) =>
+      (page.sections || []).some(
+        (section) =>
+          getSectionType(section) === "primary_workflow_form",
+      ),
+    ) ||
+    effective.pages.find(
+      (page) =>
+        String(page.pageType || page.name || "").toLowerCase() === "home",
+    ) ||
+    effective.pages[0];
+
+  targetPage.sections = Array.isArray(targetPage.sections)
+    ? targetPage.sections
+    : [];
+
+  const hasProfileSection =
+    targetPage.sections.some((section) =>
+      ["provider_profile", "provider_profiles", "team_credentials"].includes(
+        getSectionType(section),
+      ),
+    );
+
+  if (!hasProfileSection) {
+    const workflowIndex =
+      targetPage.sections.findIndex(
+        (section) =>
+          getSectionType(section) === "primary_workflow_form",
+      );
+    const profileSection = {
+      type: "provider_profile",
+      purpose:
+        "Show provider bios and credentials before the booking form.",
+      rationale:
+        "Human clarification supplied provider details after simulation flagged trust friction.",
+    };
+    if (workflowIndex >= 0) {
+      targetPage.sections.splice(workflowIndex, 0, profileSection);
+    } else {
+      targetPage.sections.push(profileSection);
+    }
+  }
+
+  effective.decisionRationale =
+    effective.decisionRationale || [];
+  if (
+    !effective.decisionRationale.some((item) =>
+      /provider|credential|dentist/i.test(String(item)),
+    )
+  ) {
+    effective.decisionRationale.push(
+      "Human clarification added provider credentials above the booking form.",
+    );
+  }
+
+  return effective;
+}
+
+function parseProviderProfiles(answer) {
+  const text = String(answer || "").trim();
+  if (!text) return [];
+  return text
+    .split(/\n|;/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, 3)
+    .map((item, index) => {
+      const parts = item.split(/,|-|\u2014/).map((part) => part.trim()).filter(Boolean);
+      return {
+        name: parts[0] || `Provider ${index + 1}`,
+        credentials: parts.slice(1).join(" · ") || "Clinical care team",
+      };
+    });
+}
+
+function renderProviderProfileSection(spec) {
+  const profiles =
+    parseProviderProfiles(
+      state.humanAnswers?.simulation_provider_credentials,
+    );
+  if (!profiles.length) return "";
+  return `
+    <section id="generatedProviders" class="provider-profile-section">
+      <div class="menu-header">
+        <div>
+          <p class="eyebrow">Care Team</p>
+          <strong>Meet your provider before booking</strong>
+          <p>Credentials are shown before the appointment form so patients can decide with confidence.</p>
+        </div>
+      </div>
+      <div class="generated-grid">
+        ${profiles
+          .map(
+            (profile) => `
+              <article class="generated-tile provider-profile-card">
+                <span class="provider-avatar">${escapeHtml(profile.name.charAt(0) || "D")}</span>
+                <strong>${escapeHtml(profile.name)}</strong>
+                <p>${escapeHtml(profile.credentials)}</p>
+              </article>
+            `,
+          )
+          .join("")}
+      </div>
+    </section>
+  `;
 }
 
 function renderAdaptiveGenericSection(section, spec, designSpec, restaurant) {
@@ -2760,8 +3223,8 @@ function renderDesignPage(page, spec, designSpec, restaurant) {
   `;
 }
 
-function renderCategoryStripSection(restaurant, sectionPurpose) {
-  const categories = restaurant.categories.length ? restaurant.categories : ["Popular", "Offers", "Pizza"];
+function renderCategoryStripSection(spec, restaurant, sectionPurpose) {
+  const categories = restaurant.categories.length ? restaurant.categories : defaultCategoriesFor(spec);
   return `
     <section class="menu-header category-strip-section">
       <div>
@@ -2776,7 +3239,7 @@ function renderCategoryStripSection(restaurant, sectionPurpose) {
 }
 
 function renderMenuShowcaseSection(spec, restaurant, designSpec, sectionPurpose) {
-  const categoryChips = restaurant.categories.length ? restaurant.categories : ["Popular", "Offers", "Pizzas"];
+  const categoryChips = restaurant.categories.length ? restaurant.categories : defaultCategoriesFor(spec);
   const featuredItems = restaurant.items.slice(0, 8);
   const isTrustBrowsing = designSpec.primaryAction.label === "Explore Menu" || designSpec.visual.trustEmphasis === "high";
   return `
@@ -2864,18 +3327,34 @@ function renderTrustBandSection(spec, sectionPurpose) {
   `;
 }
 
+const REQUEST_PLACEHOLDER_BY_SHAPE = {
+  storefront_commerce: (restaurant) => state.cart[0]?.name || restaurant.items[0]?.name || "Item from the catalog",
+  scheduled_booking: () => "Appointment request",
+  inquiry_lead: () => "Project inquiry",
+  portfolio_showcase: () => "Project inquiry",
+  catalog_reserve: (restaurant) => restaurant.items[0]?.name || "Item to reserve",
+};
+
 function renderPrimaryWorkflowForm(spec, designSpec, restaurant) {
   const kind = designSpec.primaryAction.kind;
+  const shape = resolveBusinessShape(spec);
   const requestLabel = kind === "order" ? "Order item" : kind === "booking" ? "Service needed" : "Request";
-  const requestValue =
-    kind === "order"
-      ? state.cart[0]?.name || restaurant.items[0]?.name || "Margherita Pizza"
-      : kind === "booking"
-        ? "Dental cleaning"
-        : "Emergency repair quote";
+  const requestValue = (REQUEST_PLACEHOLDER_BY_SHAPE[shape] || REQUEST_PLACEHOLDER_BY_SHAPE.inquiry_lead)(restaurant);
   const formClass = kind === "order" ? "workflow-form restaurant-order-form" : "workflow-form";
+  const responseTiming =
+    state.humanAnswers?.simulation_response_timing || "";
+  const privacyNote =
+    state.humanAnswers?.simulation_privacy_reassurance || "";
   return `
     <section id="generatedWorkflow" class="workflow-section">
+      ${
+        responseTiming || privacyNote
+          ? `<div class="workflow-reassurance">
+              ${responseTiming ? `<span>${escapeHtml(responseTiming)}</span>` : ""}
+              ${privacyNote ? `<span>${escapeHtml(privacyNote)}</span>` : ""}
+            </div>`
+          : ""
+      }
       <form id="workflowForm" class="${formClass}" data-type="${kind}">
         <label>
           Customer name
@@ -2988,6 +3467,21 @@ function resolveGeneratedActionTarget(action, spec, designSpec) {
     );
 
   if (action === "explore") {
+    if (
+      kind === "booking" &&
+      findGeneratedPageIndexBySection(
+        designSpec,
+        "provider_profile",
+      ) >= 0
+    ) {
+      return {
+        pageIndex: findGeneratedPageIndexBySection(
+          designSpec,
+          "provider_profile",
+        ),
+        selector: "#generatedProviders",
+      };
+    }
     if (kind === "order" && menuPageIndex >= 0) {
       return {
         pageIndex: menuPageIndex,
@@ -3050,6 +3544,10 @@ function normalizeServerDesignSpec(designSpec) {
       density: designSpec.visual_system?.density || "medium",
       mediaBias: designSpec.visual_system?.media_bias || "copy_first",
       trustEmphasis: designSpec.visual_system?.trust_emphasis || "medium",
+      primaryColor: designSpec.visual_system?.primary_color || "#0d7c66",
+      accentColor: designSpec.visual_system?.accent_color || "#d99b28",
+      surfaceColor: designSpec.visual_system?.surface_color || "#f7faf8",
+      fontFamily: designSpec.visual_system?.font_family || "Inter",
     },
     primaryAction: {
       label: designSpec.primary_action?.label || "Continue",
@@ -3072,11 +3570,11 @@ function normalizeServerDesignSpec(designSpec) {
 }
 
 function designAwareVisual(spec, designSpec) {
-  const verticalVisualBase = verticalVisual(spec.business.vertical);
+  const verticalVisualBase = verticalVisual(spec);
   const tone = designSpec.visual?.tone || "practical";
   if (tone === "trustworthy" || tone === "calm") {
     return {
-      className: spec.business.vertical === "clinic" ? "clinic-hero" : "service-hero",
+      className: shapeCopy(spec).visual.className,
       cardTitle: "Confidence-first layout",
       cardBody: "The agent shifted this experience toward reassurance, exploration, and lower-pressure conversion.",
     };
@@ -3153,10 +3651,18 @@ function getSectionType(section) {
     assurance: "trust_band",
     credibility: "trust_band",
     credentials: "trust_band",
+    provider_profile: "provider_profile",
+    provider_profiles: "provider_profile",
+    doctor_profiles: "provider_profile",
+    dentist_profiles: "provider_profile",
+    team_credentials: "provider_profile",
     location_hours: "trust_band",
     proof: "proof_band",
     proof_points: "proof_band",
     booking_form: "primary_workflow_form",
+    appointment_form: "primary_workflow_form",
+    appointment_booking: "primary_workflow_form",
+    appointment_booking_form: "primary_workflow_form",
     reservation_form: "primary_workflow_form",
     lead_form: "primary_workflow_form",
     contact_form: "primary_workflow_form",
@@ -3244,11 +3750,18 @@ function buildRestaurantExperienceData() {
     "DEDUPED ITEMS",
     dedupedItems,
   );
+  // If no menu photo was uploaded/extracted, the business may still have
+  // typed real item/price data into a clarification-question answer (e.g.
+  // "Popcorn $5, Nachos $6, Soda $4") — use that before ever fabricating
+  // placeholder content, and never assume it's food (a generic "Margherita
+  // Pizza" fallback is wrong for a theatre, salon, retailer, etc.).
+  const answerItems = dedupedItems.length ? [] : parseItemsFromHumanAnswers(state.humanAnswers);
   const fallbackItems = dedupedItems.length
     ? dedupedItems
+    : answerItems.length
+    ? answerItems
     : [
-        { id: "fallback-1", name: "Margherita Pizza", category: "Popular", description: "House favourite with quick delivery flow.", priceLabel: `${detectCurrencySymbol()}9.99`, priceSortValue: 9.99, visual: state.assets[0]?.url || "" },
-        { id: "fallback-2", name: "Veggie Feast", category: "Popular", description: "Customer-friendly menu layout with clear pricing.", priceLabel: `${detectCurrencySymbol()}12.49`, priceSortValue: 12.49, visual: state.assets[1]?.url || state.assets[0]?.url || "" },
+        { id: "fallback-1", name: "Item pricing not yet provided", category: "Popular", description: "Add real items and prices to replace this placeholder.", priceLabel: "--", priceSortValue: 0, visual: "" },
       ];
 
   const usableOffers = uniqueCompact(offers.map(sanitizeOfferCopy).filter(Boolean), 4);
@@ -3284,6 +3797,42 @@ function buildMenuDescription(itemName, categoryName, signals) {
   if (signals.length) qualifiers.push(compactSignalLabel(String(signals[0])));
   const prefix = qualifiers.slice(0, 2).filter(Boolean).join(" | ");
   return prefix ? `${prefix} | Simple online ordering.` : "Simple online ordering.";
+}
+
+function parseItemsFromHumanAnswers(humanAnswers) {
+  const items = [];
+  const text = Object.values(humanAnswers || {}).join(", ");
+  if (!text.trim()) return items;
+  // Split on commas that aren't inside a parenthetical (so "Combo (popcorn +
+  // soda) $10" stays one segment instead of splitting on the internal "+").
+  const segments = text.split(/,(?![^(]*\))/);
+  segments.forEach((segment, index) => {
+    const trimmed = segment.trim().replace(/^[-→:•]+/, "").trim();
+    if (!trimmed) return;
+    const priceMatch = trimmed.match(/\$\s?(\d+(?:\.\d{1,2})?)|₹\s?(\d+(?:\.\d{1,2})?)/);
+    if (!priceMatch) return;
+    const priceValue = parseFloat(priceMatch[1] || priceMatch[2]);
+    let name = trimmed.slice(0, priceMatch.index).trim();
+    // Drop a dangling unmatched "(" fragment, e.g. "Popcorn (small $5" -> "Popcorn"
+    // (the "small"/"large" variant note isn't worth keeping without its price).
+    const openCount = (name.match(/\(/g) || []).length;
+    const closeCount = (name.match(/\)/g) || []).length;
+    if (openCount > closeCount) {
+      name = name.slice(0, name.lastIndexOf("("));
+    }
+    name = name.trim().replace(/[\s(:.-]+$/, "");
+    if (!name || name.length > 60) return;
+    items.push({
+      id: `answer-item-${index}`,
+      name,
+      category: "Menu",
+      description: "",
+      priceLabel: `${detectCurrencySymbol()}${priceValue}`,
+      priceSortValue: priceValue,
+      visual: "",
+    });
+  });
+  return items;
 }
 
 function sanitizeMenuLabel(value) {
@@ -3715,8 +4264,8 @@ async function runProductionPipeline() {
   // 2. Code Generation
   pushTimelineEvent("Code Generation Agent", "Generating Next.js + Tailwind source from BuildSpec...", "active");
   try {
-    const foodVerticals = ["restaurant", "cafe", "bakery", "food", "pizzeria"];
-    const menuItems = foodVerticals.includes(state.spec?.business?.vertical)
+    const hasOrderingFeature = (state.spec?.includedFeatures || []).some((f) => f.key === "online_ordering");
+    const menuItems = hasOrderingFeature
       ? (buildRestaurantExperienceData().items || [])
       : [];
     const finalState = state.graphExecution?.final_state || {};
@@ -3727,6 +4276,8 @@ async function runProductionPipeline() {
         design_spec: finalState.design_spec || null,
         reasoning_notes: finalState.reasoning_notes || [],
         retrieved_memories: finalState.retrieved_memories || [],
+        human_answers: state.humanAnswers || {},
+        research_results: state.pipeline?.research?.research_results || null,
       },
     });
     state.pipeline.generatedCode = code;

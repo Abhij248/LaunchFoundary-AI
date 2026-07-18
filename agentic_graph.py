@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+import re
 logger = logging.getLogger(__name__)
 
 from datetime import datetime
@@ -70,6 +71,7 @@ from agentic_models import (
     Vertical,
     RiskLevel,
     PageType,
+    ClarificationQuestion,
 )
 from agentic_planner import (
     ModelJsonPlanner,
@@ -84,6 +86,17 @@ except ImportError:  # pragma: no cover
     END = "END"
     START = "START"
     StateGraph = None
+
+
+class HumanInputRequired(RuntimeError):
+    def __init__(
+        self,
+        questions: list[ClarificationQuestion],
+        state: WebsiteAgentState | None = None,
+    ) -> None:
+        self.questions = questions
+        self.state = state
+        super().__init__("human input required")
 
 
 def add_uncertainty(
@@ -651,7 +664,7 @@ def build_fallback_strategy_hypotheses(
     state: WebsiteAgentState,
 ) -> StrategyHypothesisSet:
     vertical = (
-        state.business_profile.vertical.value
+        state.business_profile.vertical
         if state.business_profile
         else infer_vertical_from_business_input(
             state
@@ -1677,7 +1690,7 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
             stage="business_profile",
             source_type=source_type,
             summary=(
-                f"Classified business as {state.business_profile.vertical.value} "
+                f"Classified business as {state.business_profile.vertical} "
                 f"with subtype {state.business_profile.subtype}."
             ),
             confidence=state.business_profile.confidence,
@@ -1695,7 +1708,7 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
             source_type=source_type,
             confidence=state.business_profile.confidence,
             summary=(
-                f"{state.business_profile.vertical.value} / "
+                f"{state.business_profile.vertical} / "
                 f"{state.business_profile.subtype}"
             ),
             status="fallback" if fallback_used else "derived",
@@ -1802,6 +1815,37 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
         )
 
         return state
+
+    @register_node("human_input")
+    def human_input_node(
+        state: WebsiteAgentState,
+    ) -> WebsiteAgentState:
+        questions = unanswered_clarification_questions(
+            state,
+        )
+        if questions:
+            state.human_input_required = True
+            state.pending_clarification_questions = questions
+            add_reasoning_note(
+                state,
+                (
+                    "Paused graph for human clarification before "
+                    "committing to workflow/design decisions."
+                ),
+            )
+            raise HumanInputRequired(
+                questions,
+                state,
+            )
+
+        state.human_input_required = False
+        state.pending_clarification_questions = []
+        add_reasoning_note(
+            state,
+            "Human clarification already available. Continuing graph execution.",
+        )
+        return state
+
     @register_node("requirements")
     def requirements_node(
         state: WebsiteAgentState,
@@ -1878,10 +1922,51 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
             )
 
-        state.requirements_spec = (
-            RequirementsSpec.model_validate(
-                normalized
+        try:
+
+            state.requirements_spec = (
+                RequirementsSpec.model_validate(
+                    normalized
+                )
             )
+
+        except ValidationError as exc:
+
+            fallback_used = True
+            source_type = ProvenanceSource.HEURISTIC_FALLBACK
+
+            logger.warning(
+                "Requirements validation failed: %s",
+                exc,
+            )
+
+            state.reasoning_notes.append(
+                (
+                    "Requirements output was "
+                    "incomplete or invalid. Used "
+                    "deterministic fallback "
+                    "requirements."
+                )
+            )
+
+            add_uncertainty(state, 0.15)
+
+            fallback_normalized = (
+                normalize_requirements_payload(
+                    {},
+                    state,
+                )
+            )
+
+            state.requirements_spec = (
+                RequirementsSpec.model_validate(
+                    fallback_normalized
+                )
+            )
+
+        apply_pricing_clarification_guard(
+            state,
+            state.requirements_spec,
         )
 
         emit_cognitive_event(
@@ -1944,6 +2029,7 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
     def strategy_hypothesis_node(
         state: WebsiteAgentState,
     ) -> WebsiteAgentState:
+        state.resume_from_node = None
 
         # state.execution_trace.append(
         #     "strategy_hypotheses"
@@ -3118,6 +3204,35 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 ]
             )
 
+        simulation_questions = (
+            build_simulation_clarification_questions(
+                state,
+                simulation,
+            )
+        )
+        if simulation_questions:
+            existing_questions = {
+                question.question_id
+                for question in (
+                    state.pending_clarification_questions
+                    or []
+                )
+            }
+            state.pending_clarification_questions.extend(
+                [
+                    question
+                    for question in simulation_questions
+                    if question.question_id
+                    not in existing_questions
+                ]
+            )
+            state.reasoning_notes.append(
+                (
+                    "Simulation found user-answerable "
+                    "gaps. Pausing before final revision."
+                )
+            )
+
         simulation_confidence = max(
             0.45,
             simulation.overall_realism_score / 10.0,
@@ -3158,6 +3273,7 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
     def revise_node(
         state: WebsiteAgentState,
     ) -> WebsiteAgentState:
+        state.resume_from_node = None
         fallback_used = False
         source_type = ProvenanceSource.EXTERNAL_MODEL
         tool_context = invoke_cognition_tools(
@@ -3555,6 +3671,19 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
 
             return "strategy_hypotheses"
 
+        if unanswered_clarification_questions(
+            state
+        ):
+            state.resume_from_node = "strategy_hypotheses"
+            state.reasoning_notes.append(
+                (
+                    "Requirements generated operational "
+                    "clarification questions. Routing to "
+                    "human input."
+                )
+            )
+            return "human_input"
+
         if (
             state.uncertainty_score > 0.45
         ):
@@ -3588,6 +3717,24 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
         # )
 
         return "strategy_hypotheses"
+
+    def simulation_router(
+        state: WebsiteAgentState,
+    ) -> str:
+        if unanswered_clarification_questions(
+            state
+        ):
+            state.resume_from_node = "revise"
+            state.reasoning_notes.append(
+                (
+                    "Simulation generated clarification "
+                    "questions. Routing to human input "
+                    "before final revision."
+                )
+            )
+            return "human_input"
+
+        return "revise"
 
     def strategy_router(
         state: WebsiteAgentState,
@@ -3838,6 +3985,11 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
     )
 
     graph.add_node(
+        "human_input",
+        human_input_node,
+    )
+
+    graph.add_node(
         "strategy_hypotheses",
         strategy_hypothesis_node,
     )
@@ -3862,9 +4014,28 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
         revise_node,
     )
 
-    graph.add_edge(
+    def start_router(
+        state: WebsiteAgentState,
+    ) -> str:
+        resume_target = (
+            state.resume_from_node
+            or ""
+        )
+        if resume_target in {
+            "strategy_hypotheses",
+            "revise",
+        }:
+            state.human_input_required = False
+            state.pending_clarification_questions = []
+            state.reasoning_notes.append(
+                f"Resuming graph at {resume_target} after human clarification."
+            )
+            return resume_target
+        return "business_profile"
+
+    graph.add_conditional_edges(
         START,
-        "business_profile",
+        start_router,
     )
 
     graph.add_edge(
@@ -3880,6 +4051,11 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
     graph.add_conditional_edges(
         "requirements",
         requirements_router,
+    )
+
+    graph.add_edge(
+        "human_input",
+        "strategy_hypotheses",
     )
 
     graph.add_conditional_edges(
@@ -3907,9 +4083,9 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
         "simulation",
     )
 
-    graph.add_edge(
+    graph.add_conditional_edges(
         "simulation",
-        "revise",
+        simulation_router,
     )
 
     graph.add_edge(
@@ -3947,7 +4123,7 @@ def _state_cycle_signature(state: WebsiteAgentState) -> tuple:
     """
     try:
         vertical = (
-            state.business_profile.vertical.value
+            state.business_profile.vertical
             if state.business_profile
             else "unknown"
         )
@@ -4231,7 +4407,11 @@ def build_business_profile_prompt(state: WebsiteAgentState) -> str:
 
         Build a BusinessProfileInference JSON object only.
 
-        Allowed vertical values: {[key.value for key in VERTICAL_RULEBOOKS.keys()]} plus "unknown".
+        vertical: a short lowercase snake_case label for the business's real category —
+        do not force it into a fixed list. Use whatever label actually fits the business,
+        e.g. "restaurant", "clinic", "ecommerce_store", "photography_studio", "saas_product",
+        "law_firm", "gym", "real_estate_agency". Only use "unknown" if the input truly gives
+        no signal of what kind of business this is.
         Allowed risk levels: ["standard", "regulated"].
 
         Business input:
@@ -4258,7 +4438,7 @@ def compact_business_profile_context(state: WebsiteAgentState) -> dict[str, Any]
         "name": profile.name,
         "location": profile.location,
         "goal": profile.goal,
-        "vertical": profile.vertical.value,
+        "vertical": profile.vertical,
         "subtype": profile.subtype,
         "risk_level": profile.risk_level.value,
         "audience": profile.audience[:4],
@@ -4276,6 +4456,10 @@ def compact_requirements_context(state: WebsiteAgentState) -> dict[str, Any]:
         "trust": requirements.trust_requirements[:5],
         "conversion": requirements.conversion_priorities[:5],
         "missing_information": requirements.missing_information[:4],
+        "clarification_questions": [
+            question.model_dump()
+            for question in requirements.clarification_questions[:3]
+        ],
     }
 
 def compact_behavioral_context(
@@ -4396,7 +4580,7 @@ def build_requirements_prompt(
     tool_context: dict[str, Any] | None = None,
 ) -> str:
     assert state.business_profile is not None
-    rulebook = VERTICAL_RULEBOOKS.get(state.business_profile.vertical)
+    rulebook = VERTICAL_RULEBOOKS.get(state.business_profile.vertical, {})
     tool_context = tool_context or {}
     return dedent(
         f"""
@@ -4406,6 +4590,9 @@ def build_requirements_prompt(
 
         Current uncertainty score:
         {state.uncertainty_score}
+
+        Human answers already provided:
+        {state.human_answers}
 
         Business snapshot tool:
         {tool_context.get("business_snapshot", {})}
@@ -4423,15 +4610,39 @@ def build_requirements_prompt(
         # {tool_context.get("process_health", {})}
 
         Requirements:
-        - choose required pages from the allowed enum values
-        - choose required workflows from the allowed enum values
+        - required_pages: choose only from this fixed set of page roles —
+          "home", "menu", "order", "reservations", "services", "booking",
+          "about", "contact", "portfolio", "pricing". These are structural
+          roles, not literal page names — map creative page ideas onto the
+          closest role (e.g. a product catalog / cart / checkout flow all
+          map onto "order"; a gallery or case-study page maps onto
+          "portfolio"; a plans/packages page maps onto "pricing").
+        - required_workflows: choose only from "order", "booking", "lead" —
+          these are the only 3 transaction shapes the backend supports.
+          Map any purchase/checkout/product flow onto "order", any
+          appointment/scheduling flow onto "booking", and any
+          inquiry/contact/quote flow onto "lead".
         - include trust requirements and conversion priorities
         - only add missing_information when truly needed
+        - before finalizing, actively ask yourself: "if I were building the
+          real backend/admin system for this specific business right now,
+          what concrete operational facts do I still not know?" Businesses
+          almost always have unstated specifics like: capacity/quantities
+          (e.g. seats per room, table count, units in stock), a priced list
+          of what they actually sell (menu items and prices, service price
+          list, ticket/package prices), or physical layout (number of rooms/
+          halls/stations, floor plan). If the business description doesn't
+          already give you these for THIS vertical, that is exactly the kind
+          of missing_information / clarification_question to surface — do
+          not let a generic-sounding business description convince you
+          nothing operational is missing.
         Generate clarification_questions only when:
         - the answer materially affects workflows
         - business logic changes
         - trust/compliance changes
         - operational behavior changes
+        - a concrete operational fact (capacity, pricing, layout, inventory)
+          needed to build the real backend is missing
 
         Avoid aesthetic-only questions.
         - if uncertainty is high:
@@ -4439,11 +4650,13 @@ def build_requirements_prompt(
         - prioritize operational ambiguity
         - reduce assumptions
         - avoid committing too early
-        ONLY RETURN:
+        Return these fields:
         - required_pages
         - required_workflows
         - trust_requirements
         - conversion_priorities
+        - missing_information
+        - clarification_questions
         """
     ).strip()
 
@@ -4702,7 +4915,11 @@ def build_design_candidates_prompt(
                     "tone": "modern",
                     "density": "medium",
                     "media_bias": "balanced",
-                    "trust_emphasis": "medium"
+                    "trust_emphasis": "medium",
+                    "primary_color": "#0d7c66",
+                    "accent_color": "#d99b28",
+                    "surface_color": "#f7faf8",
+                    "font_family": "Inter"
                 }},
 
                 "primary_action": {{
@@ -4749,7 +4966,7 @@ def build_critique_prompt(
 ) -> str:
     assert state.business_profile is not None
     assert state.requirements_spec is not None
-    rulebook = VERTICAL_RULEBOOKS.get(state.business_profile.vertical)
+    rulebook = VERTICAL_RULEBOOKS.get(state.business_profile.vertical, {})
     tool_context = tool_context or {}
     return dedent(
         f"""
@@ -4944,6 +5161,9 @@ def build_revision_prompt(
         Finalization authority:
         {state.finalization_decision.model_dump() if state.finalization_decision else None}
 
+        Human clarification answers:
+        {state.human_answers or {}}
+
         Previous critique iterations:
         {compact_history(state.critique_history)}
 
@@ -5031,6 +5251,16 @@ def build_revision_prompt(
           - renderable
           - operationally believable
           - practically deployable
+
+        - choose visual_system colors,
+          accents, surface color, and font
+          based on business vertical,
+          trust model, asset cues, and
+          audience expectations
+
+        - remove duplicate or redundant
+          pages, sections, and workflows
+          before returning the final spec
 
         - preserve only allowed enum values
         """
@@ -5366,6 +5596,14 @@ PAGE_ROLE_SECTION_RULES = {
         SectionType.TRUST_BAND,
     },
 
+    PageType.BOOKING: {
+        SectionType.PRIMARY_WORKFLOW_FORM,
+        SectionType.TRUST_BAND,
+        SectionType.DOCTOR_PROFILES,
+        SectionType.SERVICE_CARDS,
+        SectionType.PROOF_BAND,
+    },
+
     PageType.SERVICES: {
         SectionType.SERVICE_CARDS,
         SectionType.FEATURE_GRID,
@@ -5374,6 +5612,20 @@ PAGE_ROLE_SECTION_RULES = {
 
     PageType.ABOUT: {
         SectionType.FEATURE_GRID,
+        SectionType.PROOF_BAND,
+    },
+
+    PageType.PORTFOLIO: {
+        SectionType.GALLERY_STRIP,
+        SectionType.CATEGORY_STRIP,
+        SectionType.REVIEW_BAND,
+        SectionType.PRIMARY_WORKFLOW_FORM,
+    },
+
+    PageType.PRICING: {
+        SectionType.FEATURE_GRID,
+        SectionType.TRUST_BAND,
+        SectionType.PRIMARY_WORKFLOW_FORM,
         SectionType.PROOF_BAND,
     },
 }
@@ -5431,7 +5683,8 @@ def normalize_requirements_payload(
 
     rulebook = (
         VERTICAL_RULEBOOKS.get(
-            state.business_profile.vertical
+            state.business_profile.vertical,
+            {},
         )
         if state.business_profile
         else {}
@@ -5561,6 +5814,15 @@ def normalize_requirements_payload(
                 or []
             ),
 
+        "clarification_questions":
+            normalize_clarification_questions(
+                candidate.get(
+                    "clarification_questions"
+                )
+                or [],
+                candidate,
+            ),
+
         "avoid_patterns":
             normalize_string_list(
                 candidate.get(
@@ -5574,6 +5836,73 @@ def normalize_requirements_payload(
     }
 
 
+def apply_pricing_clarification_guard(
+    state: WebsiteAgentState,
+    requirements_spec: RequirementsSpec,
+) -> None:
+    """
+    Force a pricing clarification question when items were extracted from
+    uploaded assets but no prices were detected. The requirements LLM call
+    is asked to notice gaps like this on its own, but that's not reliable
+    run-to-run, so this backstops it deterministically instead of depending
+    on the model catching it every time.
+    """
+    services: list[str] = []
+    prices: list[Any] = []
+    for extraction in state.asset_extractions or []:
+        info = extraction.extracted_business_info
+        services.extend(info.services_or_items)
+        prices.extend(info.prices)
+
+    if not services or prices:
+        return
+
+    question_id = "deterministic_missing_prices"
+
+    if question_id in (state.human_answers or {}):
+        return
+
+    # Only skip if an existing question already names one of the actual
+    # extracted items -- a generic question that merely contains the word
+    # "price" (e.g. "what are your menu items and prices?", which the
+    # requirements LLM produces often) is NOT specific enough to replace this
+    # one, since it never tells the user which items still need pricing.
+    if any(
+        question.question_id == question_id
+        or any(service.lower() in question.question.lower() for service in services[:5])
+        for question in requirements_spec.clarification_questions
+    ):
+        return
+
+    requirements_spec.missing_information.append(
+        "Prices for extracted menu/service items"
+    )
+    # Insert at the front and re-cap to 3: unanswered_clarification_questions
+    # only surfaces the first 3 unanswered questions, and the requirements
+    # LLM's own output is already capped at 3 before this guard runs -- an
+    # append here would be silently squeezed out every time the model
+    # already produced 3 questions of its own. This one is more specific and
+    # actionable, so it must win the slot.
+    requirements_spec.clarification_questions.insert(
+        0,
+        ClarificationQuestion(
+            question_id=question_id,
+            question=(
+                "What are the prices for these items detected in your "
+                f"uploaded assets: {', '.join(services[:5])}?"
+            ),
+            options=[],
+            reasoning=(
+                "Menu/service items were extracted from uploaded assets but "
+                "no prices were detected, and pricing directly affects "
+                "ordering/checkout workflows and trust content."
+            ),
+            priority=1,
+        )
+    )
+    requirements_spec.clarification_questions = requirements_spec.clarification_questions[:3]
+
+
 def normalize_string_list(values: Any) -> list[str]:
     if not isinstance(values, list):
         return []
@@ -5584,6 +5913,290 @@ def normalize_string_list(values: Any) -> list[str]:
             if cleaned:
                 output.append(cleaned)
     return output[:12]
+
+
+def normalize_clarification_questions(
+    values: Any,
+    candidate: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    questions: list[dict[str, Any]] = []
+    raw_values = values if isinstance(values, list) else []
+    for index, item in enumerate(raw_values, start=1):
+        if isinstance(item, str):
+            question = item.strip()
+            if not question:
+                continue
+            questions.append(
+                {
+                    "question_id": f"clarification_{index}",
+                    "question": question,
+                    "options": [],
+                    "reasoning": "Needed to avoid an operational assumption.",
+                    "priority": index,
+                }
+            )
+            continue
+        if not isinstance(item, dict):
+            continue
+        question = str(
+            item.get("question")
+            or item.get("prompt")
+            or ""
+        ).strip()
+        if not question:
+            continue
+        questions.append(
+            {
+                "question_id": str(
+                    item.get("question_id")
+                    or item.get("id")
+                    or f"clarification_{index}"
+                ),
+                "question": question,
+                "options": normalize_string_list(
+                    item.get("options")
+                    or item.get("choices")
+                    or []
+                )[:4],
+                "reasoning": str(
+                    item.get("reasoning")
+                    or item.get("why")
+                    or "Needed to avoid an operational assumption."
+                )[:240],
+                "priority": int(
+                    item.get("priority")
+                    or index
+                ),
+            }
+        )
+
+    if not questions and candidate:
+        missing = normalize_string_list(
+            candidate.get("missing_information")
+            or []
+        )
+        for index, item in enumerate(missing[:2], start=1):
+            questions.append(
+                {
+                    "question_id": f"missing_{index}",
+                    "question": f"Please clarify: {item}",
+                    "options": [],
+                    "reasoning": "The planner marked this information as missing.",
+                    "priority": index,
+                }
+            )
+
+    return questions[:3]
+
+
+def build_simulation_clarification_questions(
+    state: WebsiteAgentState,
+    simulation: SimulationReport,
+) -> list[ClarificationQuestion]:
+    """
+    Convert simulation findings into human questions only when the fix needs
+    real business facts rather than layout changes the revision agent can apply.
+    """
+    raw_findings = normalize_string_list(
+        list(simulation.systemic_issues or [])
+        + list(simulation.recommended_improvements or [])
+    )
+    findings = " ".join(raw_findings).lower()
+    if not findings:
+        return []
+
+    questions: list[ClarificationQuestion] = []
+
+    def add_question(
+        question_id: str,
+        question: str,
+        reasoning: str,
+        options: list[str] | None = None,
+    ) -> None:
+        if question_id in (
+            state.human_answers
+            or {}
+        ):
+            return
+        questions.append(
+            ClarificationQuestion(
+                question_id=question_id,
+                question=question,
+                options=options or [],
+                reasoning=reasoning,
+                priority=len(questions) + 1,
+            )
+        )
+
+    provider_keywords = (
+        "bio",
+        "bios",
+        "credential",
+        "credentials",
+        "dentist",
+        "doctor",
+        "provider",
+        "team",
+        "specialist",
+    )
+    if (
+        any(keyword in findings for keyword in provider_keywords)
+    ):
+        add_question(
+            "simulation_provider_credentials",
+            (
+                "Which providers should the website show, and what "
+                "credentials or specialties should appear?"
+            ),
+            (
+                "Simulation recommended provider bios or credentials, "
+                "which require real business details."
+            ),
+        )
+
+    response_keywords = (
+        "response timing",
+        "response time",
+        "respond",
+        "callback",
+        "confirmation",
+        "follow up",
+        "follow-up",
+    )
+    if (
+        any(keyword in findings for keyword in response_keywords)
+    ):
+        add_question(
+            "simulation_response_timing",
+            (
+                "What response time should the site promise for booking "
+                "or contact requests?"
+            ),
+            (
+                "Simulation found uncertainty around what happens after "
+                "a visitor submits the form."
+            ),
+            [
+                "Same business day",
+                "Within 24 hours",
+                "Custom timing",
+            ],
+        )
+
+    privacy_keywords = (
+        "privacy",
+        "private",
+        "secure",
+        "confidential",
+        "hipaa",
+        "data",
+    )
+    privacy_triggered = any(
+        keyword in findings for keyword in privacy_keywords
+    )
+    if privacy_triggered:
+        add_question(
+            "simulation_privacy_reassurance",
+            (
+                "What privacy reassurance should appear beside forms?"
+            ),
+            (
+                "Simulation recommended privacy reassurance near a form, "
+                "which should use accurate business wording."
+            ),
+            [
+                "Your details stay private",
+                "Secure request handling",
+                "Custom privacy note",
+            ],
+        )
+
+    # Generic catch-all: the 3 categories above were seeded from early
+    # clinic/repair-service test cases and don't cover every business type
+    # (e.g. a theatre's seat count, a venue's layout, a menu's prices).
+    # IMPORTANT: this must only surface findings that are missing BUSINESS
+    # FACTS (things only the owner knows: prices, capacity, quantities,
+    # layout) — not the simulation's own critique of the AI's draft quality
+    # ("duplicate sections", "workflow weakly represented", "thin trust
+    # proof"). Those are things the revision agent should fix itself; a
+    # business owner has no meaningful answer to "duplicate sections reduce
+    # clarity". So this is deliberately an include-list of factual-gap
+    # signals, not an exclude-list of cosmetic ones — safer against
+    # surfacing internal design-quality judgments as user-facing questions.
+    covered_keywords = set()
+    if any(keyword in findings for keyword in provider_keywords):
+        covered_keywords.update(provider_keywords)
+    if any(keyword in findings for keyword in response_keywords):
+        covered_keywords.update(response_keywords)
+    if privacy_triggered:
+        covered_keywords.update(privacy_keywords)
+
+    factual_gap_signals = (
+        "not specified", "unspecified", "not provided", "not given",
+        "not stated", "does not specify", "doesn't specify",
+        "missing", "unclear how many", "unknown", "undefined",
+        "how many", "how much", "what is the", "what are the",
+        "pricing", "price", "prices", "cost", "capacity",
+        "quantity", "quantities", "inventory", "stock",
+        "menu", "seat", "seats", "seating", "layout",
+    )
+
+    for finding in raw_findings:
+        if len(questions) >= 4:
+            break
+        lowered = finding.lower()
+        if any(keyword in lowered for keyword in covered_keywords):
+            continue
+        if not any(signal in lowered for signal in factual_gap_signals):
+            continue
+        add_question(
+            f"simulation_detail_{len(questions) + 1}",
+            f"Please clarify: {finding}",
+            (
+                "Simulation flagged this as needing a real business "
+                "fact the model doesn't have."
+            ),
+        )
+
+    return questions[:4]
+
+
+def unanswered_clarification_questions(
+    state: WebsiteAgentState,
+) -> list[ClarificationQuestion]:
+    answered_ids = {
+        str(key)
+        for key in (
+            state.human_answers
+            or {}
+        ).keys()
+        if str(key).strip()
+    }
+    unanswered: list[ClarificationQuestion] = []
+    seen_ids: set[str] = set()
+    candidate_questions: list[ClarificationQuestion] = []
+    if state.requirements_spec:
+        candidate_questions.extend(
+            state.requirements_spec.clarification_questions
+            or []
+        )
+    candidate_questions.extend(
+        state.pending_clarification_questions
+        or []
+    )
+    for question in (
+        candidate_questions
+    ):
+        if (
+            question.question_id in answered_ids
+            or question.question_id in seen_ids
+        ):
+            continue
+        seen_ids.add(question.question_id)
+        unanswered.append(
+            question
+        )
+    return unanswered[:3]
 
 
 def normalize_candidate_set_payload(payload: dict[str, Any], state: WebsiteAgentState) -> dict[str, Any]:
@@ -6039,6 +6652,12 @@ def normalize_design_candidate(
                     "type": section_type
                 }
 
+            section_type = SECTION_TYPE_ALIASES.get(
+                section_type.strip().lower().replace(" ", "_"),
+                section_type,
+            )
+            section["type"] = section_type
+
             try:
 
                 section_enum = (
@@ -6067,6 +6686,11 @@ def normalize_design_candidate(
         for behavioral_section in (
             behavioral_sections
         ):
+
+            behavioral_section = SECTION_TYPE_ALIASES.get(
+                str(behavioral_section).strip().lower().replace(" ", "_"),
+                str(behavioral_section).strip(),
+            )
 
             try:
 
@@ -6216,10 +6840,14 @@ def normalize_page_spec(page: dict[str, Any], index: int, state: WebsiteAgentSta
         raw_sections = [{"type": section, "purpose": "Model-selected section", "rationale": "Supports page goal"} for section in raw_sections]
     if not raw_sections:
         raw_sections = infer_default_sections_for_page(normalized_page_type, state, page, mode)
+    normalized_sections = [
+        normalize_section_spec(section, section_index, normalized_page_type, state)
+        for section_index, section in enumerate(raw_sections, start=1)
+    ]
     return {
         "page_type": normalized_page_type,
         "title": page.get("title") or page.get("name") or page_title_for_type(normalized_page_type, index),
-        "sections": [normalize_section_spec(section, section_index, normalized_page_type, state) for section_index, section in enumerate(raw_sections, start=1)],
+        "sections": deduplicate_sections(normalized_sections),
     }
 
 
@@ -6273,12 +6901,109 @@ def normalize_visual_system(value: dict[str, Any], state: WebsiteAgentState | No
     if trust_emphasis not in {"low", "medium", "high"}:
         trust_emphasis = "medium"
 
+    primary_color, accent_color, surface_color, font_family = (
+        infer_design_tokens(
+            value,
+            state,
+            tone,
+            mode,
+        )
+    )
+
     return {
         "tone": tone,
         "density": density,
         "media_bias": media_bias,
         "trust_emphasis": trust_emphasis,
+        "primary_color": primary_color,
+        "accent_color": accent_color,
+        "surface_color": surface_color,
+        "font_family": font_family,
     }
+
+
+def infer_design_tokens(
+    value: dict[str, Any],
+    state: WebsiteAgentState | None,
+    tone: str,
+    mode: str,
+) -> tuple[str, str, str, str]:
+    business_input = (
+        state.business_input
+        if state
+        else {}
+    ) or {}
+    vertical = infer_vertical_from_business_input(
+        state
+    )
+    palettes = {
+        "restaurant": ("#9f2f22", "#e4a12f", "#fff8ef", "Inter"),
+        "cafe": ("#6f4e37", "#d6a15f", "#fbf6ef", "Inter"),
+        "bakery": ("#9a5b42", "#efb65c", "#fff7ed", "Inter"),
+        "clinic": ("#0f766e", "#38bdf8", "#f4fbfb", "Inter"),
+        "repair_service": ("#334155", "#f59e0b", "#f8fafc", "Inter"),
+        "salon": ("#8b5cf6", "#f0abfc", "#fdf4ff", "Inter"),
+    }
+    defaults = palettes.get(
+        vertical,
+        ("#0d7c66", "#d99b28", "#f7faf8", "Inter"),
+    )
+    if tone == "premium":
+        defaults = ("#111827", "#c8a45d", "#f8f5ef", "Inter")
+    if tone == "calm":
+        defaults = ("#0f766e", "#7dd3fc", "#f4fbfb", "Inter")
+    primary = (
+        value.get("primary_color")
+        or value.get("primaryColor")
+        or business_input.get("primary_color")
+        or defaults[0]
+    )
+    accent = (
+        value.get("accent_color")
+        or value.get("accentColor")
+        or business_input.get("accent_color")
+        or defaults[1]
+    )
+    surface = (
+        value.get("surface_color")
+        or value.get("surfaceColor")
+        or defaults[2]
+    )
+    font = (
+        value.get("font_family")
+        or value.get("fontFamily")
+        or value.get("font")
+        or defaults[3]
+    )
+    return (
+        normalize_hex_color(primary, defaults[0]),
+        normalize_hex_color(accent, defaults[1]),
+        normalize_hex_color(surface, defaults[2]),
+        normalize_font_family(font),
+    )
+
+
+def normalize_hex_color(
+    value: Any,
+    fallback: str,
+) -> str:
+    text = str(value or "").strip()
+    if re.fullmatch(r"#[0-9a-fA-F]{6}", text):
+        return text
+    return fallback
+
+
+def normalize_font_family(value: Any) -> str:
+    text = str(value or "Inter").strip()
+    allowed = {
+        "Inter",
+        "Manrope",
+        "Poppins",
+        "Nunito",
+        "Source Sans 3",
+        "DM Sans",
+    }
+    return text if text in allowed else "Inter"
 
 
 def normalize_primary_action(value: dict[str, Any], state: WebsiteAgentState | None = None, mode: str = "conversion") -> dict[str, Any]:
@@ -6303,15 +7028,39 @@ def normalize_primary_action(value: dict[str, Any], state: WebsiteAgentState | N
 def normalize_design_spec(value: dict[str, Any], state: WebsiteAgentState | None = None) -> dict[str, Any]:
     pages = value.get("pages") or []
     chosen_candidate_id = value.get("chosen_candidate_id") or value.get("candidate_id") or value.get("id") or "candidate_1"
+    normalized_pages = deduplicate_pages(
+        [
+            normalize_page_spec(page, index, state or WebsiteAgentState(business_input={}))
+            for index, page in enumerate(pages, start=1)
+        ]
+    )
     return {
         "brief": value.get("brief") or value.get("rationale") or "Model-selected design specification.",
         "chosen_candidate_id": chosen_candidate_id,
         "primary_goal": value.get("primary_goal") or value.get("goal") or "increase conversions",
         "visual_system": normalize_visual_system(value.get("visual_system") or value.get("visual") or {}, state),
         "primary_action": normalize_primary_action(value.get("primary_action") or value.get("cta") or {}, state),
-        "pages": [normalize_page_spec(page, index, state or WebsiteAgentState(business_input={})) for index, page in enumerate(pages, start=1)],
+        "pages": normalized_pages,
         "decision_rationale": normalize_string_list(value.get("decision_rationale") or value.get("rationales") or []),
     }
+
+
+def deduplicate_pages(
+    pages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    output: list[dict[str, Any]] = []
+    for page in pages:
+        key = str(
+            page.get("page_type")
+            or page.get("title")
+            or ""
+        ).lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        output.append(page)
+    return output or pages[:1]
 
 
 def build_fallback_design_spec(state: WebsiteAgentState) -> dict[str, Any]:
@@ -6461,7 +7210,7 @@ def build_fallback_critique(candidate: Any, state: WebsiteAgentState) -> Any:
         (
             8
             if state.business_profile
-            and state.business_profile.vertical.value
+            and state.business_profile.vertical
             in candidate_attr(
                 candidate,
                 "rationale",
@@ -6934,6 +7683,15 @@ def normalize_page_type(value: Any) -> str:
         "reservations_page": "reservations",
         "reservation": "reservations",
         "service": "services",
+        "gallery": "portfolio",
+        "portfolio_page": "portfolio",
+        "work": "portfolio",
+        "case_studies": "portfolio",
+        "pricing_page": "pricing",
+        "plans": "pricing",
+        "shop": "order",
+        "products": "order",
+        "store": "order",
     }
     normalized = aliases.get(raw, raw)
     allowed = {page_type.value for page_type in PageType}
@@ -6950,6 +7708,8 @@ def page_title_for_type(page_type: str, index: int) -> str:
         "booking": "Booking",
         "about": "About",
         "contact": "Contact",
+        "portfolio": "Portfolio",
+        "pricing": "Pricing",
     }
     return titles.get(page_type, f"Page {index}")
 
@@ -7010,6 +7770,18 @@ def infer_default_sections_for_page(page_type: str, state: WebsiteAgentState, pa
             {"type": "gallery_strip", "purpose": purpose or "Show the business visually.", "rationale": "Adds personality and context."},
             {"type": "proof_band", "purpose": "Summarize trust and differentiation.", "rationale": "About pages should support credibility."},
         ]
+    if page_type == "portfolio":
+        return [
+            {"type": "gallery_strip", "purpose": purpose or "Showcase past work visually.", "rationale": "Portfolio pages should lead with visual evidence."},
+            {"type": "review_band", "purpose": "Reinforce quality with client feedback.", "rationale": "Social proof supports portfolio credibility."},
+            {"type": "primary_workflow_form", "purpose": "Turn interest into an inquiry or quote request.", "rationale": "Pair the showcase with a clear next step."},
+        ]
+    if page_type == "pricing":
+        return [
+            {"type": "feature_grid", "purpose": purpose or "Lay out plans or packages clearly.", "rationale": "Pricing pages need scannable structure."},
+            {"type": "trust_band", "purpose": "Reduce hesitation before committing.", "rationale": "Pricing decisions benefit from reassurance."},
+            {"type": "primary_workflow_form", "purpose": "Convert plan interest into action.", "rationale": "Keep the path to purchase or contact short."},
+        ]
     return [
         {"type": "feature_grid", "purpose": purpose, "rationale": page.get("rationale") or "Supports the primary user journey."}
     ]
@@ -7024,7 +7796,7 @@ def infer_home_hero_type(state: WebsiteAgentState) -> str:
 
 
 def infer_primary_content_section(state: WebsiteAgentState) -> str:
-    vertical = state.business_profile.vertical.value if state.business_profile else ""
+    vertical = state.business_profile.vertical if state.business_profile else ""
     if vertical in {"restaurant", "cafe", "bakery"}:
         return "menu_showcase"
     if vertical == "clinic":
@@ -7034,27 +7806,38 @@ def infer_primary_content_section(state: WebsiteAgentState) -> str:
     return "feature_grid"
 
 
+SECTION_TYPE_ALIASES: dict[str, str] = {
+    "nav": "page_nav",
+    "navigation": "page_nav",
+    "gallery": "gallery_strip",
+    "menu": "menu_showcase",
+    "menu_grid": "menu_showcase",
+    "features": "feature_grid",
+    "cards": "feature_grid",
+    "trust": "trust_band",
+    "reviews": "review_band",
+    "proof": "proof_band",
+    "form": "primary_workflow_form",
+    "workflow_form": "primary_workflow_form",
+    "doctors": "doctor_profiles",
+    "services": "service_cards",
+    "categories": "category_strip",
+    # Behavioral-archetype section recommendations (behavioral_rulebooks.py /
+    # behavioral_requirements.py) that predate SectionType's coverage — without
+    # these aliases they're silently dropped instead of degrading to the
+    # closest real section type.
+    "credential_band": "trust_band",
+    "contact_strip": "trust_band",
+    "availability_banner": "hero_trust_banner",
+    "quick_checkout": "primary_workflow_form",
+}
+
+
 def infer_section_type(value: Any, page_type: str, state: WebsiteAgentState) -> str:
     raw = str(value or "").strip().lower().replace(" ", "_")
-    aliases = {
-        "hero": infer_home_hero_type(state) if page_type == "home" else "hero_trust_banner",
-        "nav": "page_nav",
-        "navigation": "page_nav",
-        "gallery": "gallery_strip",
-        "menu": "menu_showcase",
-        "menu_grid": "menu_showcase",
-        "features": "feature_grid",
-        "cards": "feature_grid",
-        "trust": "trust_band",
-        "reviews": "review_band",
-        "proof": "proof_band",
-        "form": "primary_workflow_form",
-        "workflow_form": "primary_workflow_form",
-        "doctors": "doctor_profiles",
-        "services": "service_cards",
-        "categories": "category_strip",
-    }
-    return aliases.get(raw, "feature_grid")
+    if raw == "hero":
+        return infer_home_hero_type(state) if page_type == "home" else "hero_trust_banner"
+    return SECTION_TYPE_ALIASES.get(raw, "feature_grid")
 
 
 def default_section_purpose(section_type: str, page_type: str) -> str:

@@ -308,6 +308,16 @@ def design_quality_tool(
             [],
         )
     ]
+    duplicate_sections = [
+        section
+        for section in set(section_types)
+        if section_types.count(section) > 1
+    ]
+    if duplicate_sections:
+        issues.append(
+            "Duplicate or redundant sections reduce clarity."
+        )
+
     if required_workflows and not workflow_sections_present(
         required_workflows,
         section_types,
@@ -710,6 +720,8 @@ def recommendation_for_issue(
         return "Use menu cards with item names, prices, and add actions."
     if "Hero" in issue:
         return "Lead with a distinct hero, image, CTA, and trust cue."
+    if "Duplicate" in issue:
+        return "Merge repeated sections and keep one clear workflow path."
     return "Tighten structure around the business goal."
 
 

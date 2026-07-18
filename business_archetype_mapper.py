@@ -122,4 +122,27 @@ def infer_behavioral_archetypes(
                 "urgent_service_decision"
             )
 
+    # Keyword catch-all so a business whose vertical isn't one of the
+    # hardcoded ones above (e.g. an e-commerce store, a photography studio)
+    # still gets a real archetype instead of silently getting none.
+    if not archetypes:
+
+        if any(
+            word in text
+            for word in [
+                "shop", "store", "sell", "buy", "order",
+                "checkout", "product", "ecommerce", "e-commerce",
+            ]
+        ):
+            archetypes.append("fast_impulse_conversion")
+
+        elif any(
+            word in text
+            for word in [
+                "consultation", "portfolio", "certified", "licensed",
+                "expert", "professional", "case study", "showcase",
+            ]
+        ):
+            archetypes.append("high_trust_consideration")
+
     return archetypes

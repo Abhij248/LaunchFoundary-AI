@@ -1007,6 +1007,45 @@ textarea {
   scroll-margin-top: 24px;
 }
 
+.workflow-reassurance {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.workflow-reassurance span {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+  padding: 8px 12px;
+}
+
+.provider-profile-section {
+  display: grid;
+  gap: 18px;
+  scroll-margin-top: 24px;
+}
+
+.provider-profile-card {
+  align-content: start;
+}
+
+.provider-avatar {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 900;
+  margin-bottom: 12px;
+}
+
 #generatedMenu {
   scroll-margin-top: 24px;
 }
@@ -1195,6 +1234,34 @@ textarea {
 .clarification-options {
   display: grid;
   gap: 10px;
+}
+
+.human-loop-card {
+  width: min(460px, calc(100vw - 48px));
+}
+
+.human-loop-form {
+  display: grid;
+  gap: 12px;
+}
+
+.human-loop-form label {
+  display: grid;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.human-loop-form textarea,
+.human-loop-form select {
+  width: 100%;
+  min-height: 44px;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: white;
+  color: var(--ink);
+  font: inherit;
 }
 
 .clarification-option {

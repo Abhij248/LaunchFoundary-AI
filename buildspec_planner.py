@@ -16,6 +16,9 @@ class FeatureModule:
     compliance: list[str] = field(default_factory=list)
     impact: str = "medium"
     complexity: str = "medium"
+    # Businesses outside the curated `applicable_to` vertical list still
+    # qualify for this feature when their business_shape matches one of these.
+    applicable_to_shapes: list[str] = field(default_factory=list)
 
 
 FEATURE_REGISTRY: dict[str, FeatureModule] = {
@@ -23,8 +26,9 @@ FEATURE_REGISTRY: dict[str, FeatureModule] = {
         key="online_ordering",
         label="Online ordering",
         applicable_to=["restaurant", "cafe", "bakery"],
+        applicable_to_shapes=["storefront_commerce"],
         requires=["menu_items", "business_hours"],
-        backend=["orders_table", "cart", "order_status", "admin_orders"],
+        backend=["menu_items_table", "orders_table", "cart", "order_status", "admin_orders"],
         qa=["add_to_cart", "submit_order", "admin_order_visible"],
         trust=["clear_prices", "pickup_delivery_info"],
         compliance=["allergen_notice"],
@@ -70,12 +74,49 @@ FEATURE_REGISTRY: dict[str, FeatureModule] = {
         key="lead_capture",
         label="Lead capture",
         applicable_to=["restaurant", "cafe", "bakery", "clinic", "salon", "tutor", "consultant", "repair_service", "unknown"],
+        applicable_to_shapes=["storefront_commerce", "scheduled_booking", "inquiry_lead", "portfolio_showcase", "catalog_reserve"],
         requires=["contact_email"],
         backend=["leads_table", "admin_leads"],
         qa=["lead_form_submit", "admin_lead_visible"],
         trust=["phone_number", "response_time"],
         impact="medium",
         complexity="low",
+    ),
+    "catalog_reservation": FeatureModule(
+        key="catalog_reservation",
+        label="Catalog reservation",
+        applicable_to=[],
+        applicable_to_shapes=["catalog_reserve"],
+        requires=[],
+        backend=["catalog_items_table", "holds_table", "admin_holds"],
+        qa=["hold_submit", "admin_hold_visible"],
+        trust=["availability_status"],
+        impact="high",
+        complexity="medium",
+    ),
+    "quote_request": FeatureModule(
+        key="quote_request",
+        label="Quote request",
+        applicable_to=[],
+        applicable_to_shapes=["inquiry_lead"],
+        requires=["contact_email"],
+        backend=["quotes_table", "admin_quotes"],
+        qa=["quote_submit", "admin_quote_visible"],
+        trust=["response_time", "phone_number"],
+        impact="high",
+        complexity="low",
+    ),
+    "portfolio_showcase": FeatureModule(
+        key="portfolio_showcase",
+        label="Portfolio showcase",
+        applicable_to=[],
+        applicable_to_shapes=["portfolio_showcase"],
+        requires=[],
+        backend=["portfolio_items_table", "admin_portfolio"],
+        qa=["portfolio_item_visible"],
+        trust=["case_study_evidence"],
+        impact="high",
+        complexity="medium",
     ),
 }
 
@@ -105,7 +146,58 @@ PAGE_PRESETS: dict[str, list[str]] = {
 }
 
 
+# Curated transactional "shape" a business's backend/admin/checkout needs map
+# onto. Kept deliberately small (unlike Vertical, which is an open label) since
+# the DB schema, admin UI buckets, and cart/booking/lead-form rendering need a
+# finite set of concrete implementations to build against.
+VERTICAL_TO_SHAPE: dict[str, str] = {
+    "restaurant": "storefront_commerce",
+    "cafe": "storefront_commerce",
+    "bakery": "storefront_commerce",
+    "clinic": "scheduled_booking",
+    "salon": "scheduled_booking",
+    "tutor": "scheduled_booking",
+    "consultant": "scheduled_booking",
+    "repair_service": "inquiry_lead",
+}
+
+
+BUSINESS_SHAPE_KEYWORDS: list[tuple[str, list[str]]] = [
+    ("storefront_commerce", ["shop", "store", "ecommerce", "e-commerce", "sell", "product", "shipping", "checkout", "retail", "boutique", "merchandise", "movie", "cinema", "theatre", "theater", "showtime", "showtimes", "ticket", "tickets", "screening", "box office"]),
+    ("portfolio_showcase", ["portfolio", "photography", "photographer", "gallery", "showcase", "creative", "design studio", "artist"]),
+    ("catalog_reserve", ["library", "librarian", "book lending", "borrow", "lending", "loan program", "rental", "equipment rental", "reserve a copy", "hold a copy", "waitlist", "checkout a book"]),
+    ("scheduled_booking", ["appointment", "booking", "schedule", "session", "class", "consultation", "visit"]),
+    ("inquiry_lead", ["quote", "inquiry", "contact us", "get in touch", "request", "estimate"]),
+]
+
+
+SHAPE_PAGE_PRESETS: dict[str, list[str]] = {
+    "storefront_commerce": ["Home", "Shop", "Cart", "About", "Contact"],
+    "scheduled_booking": ["Home", "Services", "Book Now", "About", "Contact"],
+    "inquiry_lead": ["Home", "Services", "Request a Quote", "About", "Contact"],
+    "portfolio_showcase": ["Home", "Portfolio", "About", "Contact"],
+    "catalog_reserve": ["Home", "Catalog", "My Holds", "About", "Contact"],
+}
+
+
 REGULATED_VERTICALS = {"clinic", "consultant"}
+
+
+def classify_business_shape(raw_input: str, vertical_analysis: dict[str, Any]) -> str:
+    vertical = vertical_analysis.get("vertical", "unknown")
+    if vertical in VERTICAL_TO_SHAPE:
+        return VERTICAL_TO_SHAPE[vertical]
+
+    text = raw_input.lower()
+    scores: dict[str, int] = {}
+    for shape, keywords in BUSINESS_SHAPE_KEYWORDS:
+        scores[shape] = sum(1 for keyword in keywords if keyword in text)
+
+    best_shape = max(scores, key=scores.get)
+    if scores[best_shape] == 0:
+        return "inquiry_lead"
+
+    return best_shape
 
 
 def classify_vertical(raw_input: str) -> dict[str, Any]:
@@ -137,7 +229,12 @@ def detect_available_fields(profile: dict[str, Any], raw_input: str) -> set[str]
     text = raw_input.lower()
     fields = set(profile.keys())
 
-    if "menu" in text or "pizza" in text or "pasta" in text or "coffee" in text:
+    if (
+        "menu" in text or "pizza" in text or "pasta" in text or "coffee" in text
+        or "product" in text or "catalog" in text or "merchandise" in text
+        or "sell" in text or "shop" in text or "store" in text
+        or "ticket" in text or "show" in text or "snack" in text
+    ):
         fields.add("menu_items")
     if "hour" in text or "open" in text or profile.get("business_hours"):
         fields.add("business_hours")
@@ -151,13 +248,15 @@ def detect_available_fields(profile: dict[str, Any], raw_input: str) -> set[str]
     return fields
 
 
-def select_features(vertical: str, available_fields: set[str]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+def select_features(vertical: str, available_fields: set[str], shape: str = "") -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
     included: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     missing: set[str] = set()
 
     for feature in FEATURE_REGISTRY.values():
-        if vertical not in feature.applicable_to and "unknown" not in feature.applicable_to:
+        applies_by_vertical = vertical in feature.applicable_to or "unknown" in feature.applicable_to
+        applies_by_shape = bool(shape) and shape in feature.applicable_to_shapes
+        if not applies_by_vertical and not applies_by_shape:
             continue
 
         unmet = [field for field in feature.requires if field not in available_fields]
@@ -179,9 +278,10 @@ def select_features(vertical: str, available_fields: set[str]) -> tuple[list[dic
                 "reason": f"Skipped because missing required info: {', '.join(unmet)}",
             })
         else:
+            reason_subject = vertical.replace("_", " ") if applies_by_vertical else shape.replace("_", " ")
             included.append({
                 **decision,
-                "reason": f"Included because it is high-value for {vertical.replace('_', ' ')} businesses.",
+                "reason": f"Included because it is high-value for {reason_subject} businesses.",
             })
 
     if not included:
@@ -218,8 +318,11 @@ def readiness_scores(vertical: str, included_features: list[dict[str, Any]], mis
 def generate_build_spec(profile: dict[str, Any], raw_input: str) -> dict[str, Any]:
     vertical_analysis = classify_vertical(raw_input)
     vertical = vertical_analysis["vertical"]
+    shape = classify_business_shape(raw_input, vertical_analysis)
+    if vertical == "unknown":
+        vertical_analysis["subtype"] = f"{shape.replace('_', ' ')} business"
     available_fields = detect_available_fields(profile, raw_input)
-    included, skipped, missing = select_features(vertical, available_fields)
+    included, skipped, missing = select_features(vertical, available_fields, shape)
 
     trust = sorted({item for feature in included for item in feature["trust"]})
     compliance = sorted({item for feature in included for item in feature["compliance"]})
@@ -249,7 +352,12 @@ def generate_build_spec(profile: dict[str, Any], raw_input: str) -> dict[str, An
                 "accent_color": profile.get("accent_color", "#f59e0b"),
             },
         },
-        "pages": PAGE_PRESETS.get(vertical, PAGE_PRESETS["unknown"]),
+        "pages": (
+            (PAGE_PRESETS.get(vertical) if vertical != "unknown" else None)
+            or SHAPE_PAGE_PRESETS.get(shape)
+            or PAGE_PRESETS["unknown"]
+        ),
+        "businessShape": shape,
         "includedFeatures": included,
         "skippedFeatures": skipped,
         "missingInfo": missing,
