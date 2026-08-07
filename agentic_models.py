@@ -103,32 +103,6 @@ class ReflectionReport(BaseModel):
 
     should_expand_exploration: bool = False
 
-class DebateOutcome(BaseModel):
-    winning_candidate_id: str
-
-    losing_candidate_id: str
-
-    winner_reasoning: str
-
-    loser_reasoning: str
-
-    tradeoff_analysis: list[str] = Field(
-        default_factory=list
-    )
-
-    synthesis_opportunities: list[str] = Field(
-        default_factory=list
-    )
-
-    strategic_observations: list[str] = Field(
-        default_factory=list
-    )
-
-    confidence: float = Field(
-        ge=0.0,
-        le=1.0,
-    )
-
 class WorkflowSimulation(BaseModel):
     persona: str
 
@@ -367,7 +341,15 @@ class CanonicalBusinessIdentity(
     )
 
 class RequirementsSpec(BaseModel):
-    required_pages: list[PageType]
+    # Free-form content-area labels the LLM names itself (e.g. "gallery",
+    # "faq", "class_schedule") -- not constrained to the PageType enum.
+    # required_workflows stays enum-strict below because it maps directly
+    # onto the backend's 3 actual submission-handling shapes (order/booking/
+    # lead); required_pages has no equivalent downstream contract to protect
+    # -- it's purely descriptive, so forcing it into a fixed 10-item list
+    # only served to silently fail validation (and fall back the *entire*
+    # requirements spec) whenever the model named something not on the list.
+    required_pages: list[str]
     required_workflows: list[WorkflowType]
     trust_requirements: list[str] = Field(default_factory=list)
     compliance_requirements: list[str] = Field(default_factory=list)
@@ -546,26 +528,6 @@ class AgentDecision(
         default_factory=list
     )
 
-class CognitiveHealthReport(
-    BaseModel
-):
-
-    exploration_quality: float
-
-    reasoning_diversity: float
-
-    convergence_risk: float
-
-    critique_depth: float
-
-    hallucination_risk: float
-
-    cognition_stability: float
-
-    notes: list[str] = Field(
-        default_factory=list
-    )
-
 class AgentDecision(
     BaseModel
 ):
@@ -590,7 +552,6 @@ class WebsiteAgentState(BaseModel):
 
 
     cognitive_events: list[CognitiveEvent] = Field(default_factory=list)
-    cognitive_health: CognitiveHealthReport | None = None
 
     agent_decisions: dict[
         str,
@@ -603,7 +564,6 @@ class WebsiteAgentState(BaseModel):
     behavioral_blend: BehavioralBlend | None = None
     behavioral_contexts: list[BehavioralContext] = Field(default_factory=list)
     simulation_report: SimulationReport | None = None
-    debate_outcome: DebateOutcome | None = None
     uncertainty_score: float = 0.0
     reflection_report: ReflectionReport | None = None
     reasoning_notes: list[str] = Field(default_factory=list)

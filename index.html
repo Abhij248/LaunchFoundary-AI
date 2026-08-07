@@ -4,6 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>LaunchFoundry AI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
@@ -12,22 +18,37 @@
         <div class="brand">
           <div class="brand-mark">LF</div>
           <div>
-            <p class="eyebrow">Powered by Pollinations AI</p>
+            <p class="eyebrow">AI Business Builder</p>
             <h1>LaunchFoundry AI</h1>
           </div>
         </div>
+        <section id="authBar" class="auth-bar">
+          <div id="authLoggedOut">
+            <input id="authEmail" type="email" placeholder="Email" autocomplete="email">
+            <input id="authPassword" type="password" placeholder="Password" autocomplete="current-password">
+            <div class="auth-bar-actions">
+              <button id="authSignupBtn" class="ghost-button" type="button">Sign up</button>
+              <button id="authLoginBtn" class="primary-button" type="button">Log in</button>
+            </div>
+            <p id="authStatus" class="muted"></p>
+          </div>
+          <div id="authLoggedIn" hidden>
+            <p>Logged in as <strong id="authEmailDisplay"></strong></p>
+            <button id="authLogoutBtn" class="ghost-button" type="button">Log out</button>
+          </div>
+        </section>
+
         <nav class="steps" aria-label="Workflow">
           <button class="step is-active" data-target="intake">1. Intake</button>
           <button class="step" data-target="reasoning">2. Reasoning</button>
           <button class="step" data-target="spec">3. Build Spec</button>
           <button class="step" data-target="website">4. Website</button>
-          <button class="step" data-target="admin">5. Admin</button>
-          <button class="step" data-target="qa">6. QA</button>
+          <button class="step" data-target="qa">5. QA</button>
         </nav>
         <section class="amd-panel">
           <p class="eyebrow">AI Stack</p>
           <p>
-            Pollinations AI powers vision extraction, LLM inference, and business understanding.
+            Grok powers vision extraction, LLM inference, and business understanding.
             Research agents run competitor analysis, local SEO, and menu extraction.
           </p>
         </section>
@@ -42,6 +63,84 @@
           <button id="runDemo" class="primary-button">Generate System</button>
         </header>
 
+        <section id="loggedOutGate" class="panel">
+          <div class="section-title">
+            <h3>Sign in to get started</h3>
+            <p>Create an account or log in (top left) to build and manage your business website.</p>
+          </div>
+        </section>
+
+        <section id="dashboardView" class="panel">
+          <div id="myBusinessesSection">
+            <div class="section-title">
+              <h3>My Businesses</h3>
+              <p>Manage your live business websites.</p>
+            </div>
+            <div id="myBusinessesList" class="my-businesses-list"></div>
+            <button id="createNewBusinessBtn" class="primary-button" type="button">+ Create New Business</button>
+          </div>
+
+          <div id="dashboardBusinessPanel" hidden>
+            <div class="section-title">
+              <h3 id="dashboardBusinessName"></h3>
+              <p>Live customer site: <a id="dashboardBusinessLink" href="#" target="_blank" rel="noopener"></a></p>
+            </div>
+
+            <div id="generatedAdminLinkWrap" hidden class="generated-admin-link-card">
+              <div>
+                <h4>Admin Dashboard</h4>
+                <p>Generated for this business's real workflows — opens in its own tab.</p>
+              </div>
+              <a id="generatedAdminLink" href="#" target="_blank" rel="noopener" class="primary-button">Open Admin Dashboard &rarr;</a>
+            </div>
+
+            <div class="website-preview-wrap">
+              <iframe id="dashboardPreviewFrame" srcdoc=""
+                style="width:100%;height:420px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;"></iframe>
+            </div>
+
+            <section class="revision-request">
+              <div class="section-title">
+                <h4>Request a Fix</h4>
+                <p>Something wrong or missing? Describe it and the site will be updated to address it.</p>
+              </div>
+              <textarea id="revisionRequestInput" placeholder="e.g. Movies and snacks are mixed together — please show them as separate sections. Or: the booking form is missing a date field."></textarea>
+              <button id="submitRevisionBtn" class="primary-button" type="button">Update My Site</button>
+              <p id="revisionStatus" class="muted"></p>
+            </section>
+
+            <div id="genericAdminPanels">
+              <div class="admin-grid">
+                <section>
+                  <h4>Orders</h4>
+                  <div id="ordersList" class="record-list"></div>
+                </section>
+                <section>
+                  <h4>Bookings</h4>
+                  <div id="bookingsList" class="record-list"></div>
+                </section>
+                <section>
+                  <h4>Leads</h4>
+                  <div id="leadsList" class="record-list"></div>
+                </section>
+              </div>
+
+              <section class="menu-editor">
+                <div class="section-title">
+                  <h4>Menu &amp; Pricing</h4>
+                  <p>Add, edit, or remove items and prices — changes appear on the live site immediately.</p>
+                </div>
+                <div id="menuEditorList"></div>
+                <div class="menu-editor-actions">
+                  <button id="addMenuItemBtn" class="ghost-button" type="button">+ Add item</button>
+                  <button id="saveMenuItemsBtn" class="primary-button" type="button">Save changes</button>
+                </div>
+                <p id="menuEditorStatus" class="muted"></p>
+              </section>
+            </div>
+          </div>
+        </section>
+
         <section id="intake" class="panel is-visible">
           <div class="section-title">
             <h3>Business Intake</h3>
@@ -50,37 +149,29 @@
           <div class="form-grid">
             <label>
               Business name
-              <input id="businessName" value="Bella Napoli" />
+              <input id="businessName" placeholder="e.g. Bella Napoli" />
             </label>
             <label>
               Location
-              <input id="businessLocation" value="San Francisco" />
+              <input id="businessLocation" placeholder="e.g. San Francisco, CA" />
             </label>
             <label>
               Goal
-              <input id="businessGoal" placeholder="e.g. sell more tickets and snacks, increase bookings, get more qualified leads" value="increase online orders and table reservations" />
+              <input id="businessGoal" placeholder="e.g. sell more tickets and snacks, increase bookings, get more qualified leads" />
             </label>
             <label>
               Contact email
-              <input id="businessEmail" value="hello@bellanapoli.example" />
+              <input id="businessEmail" placeholder="e.g. hello@yourbusiness.com" />
             </label>
             <label class="wide">
               Raw business details
-              <textarea id="businessDetails">Bella Napoli is a family Italian restaurant in San Francisco. It serves pizza, pasta, desserts, and has a menu for pickup orders. Business hours are 11am to 10pm daily. The owner wants more online orders and table reservations.</textarea>
+              <textarea id="businessDetails" placeholder="Describe your business: what you sell or offer, your hours, what you want visitors to be able to do (order online, book appointments, request quotes, etc.)"></textarea>
             </label>
             <label class="wide">
               Business Logo
               <input id="businessLogo" type="file" accept="image/*" />
               <div id="logoPreview" class="logo-preview"></div>
             </label>
-            <div class="color-palette-section">
-              <label>Primary Color</label>
-              <input id="primaryColor" type="color" value="#3b82f6" />
-              <label>Secondary Color</label>
-              <input id="secondaryColor" type="color" value="#1e40af" />
-              <label>Accent Color</label>
-              <input id="accentColor" type="color" value="#f59e0b" />
-            </div>
             <label class="wide">
               Target Audience
               <textarea id="targetAudience" placeholder="Describe your ideal customers (age, location, interests, pain points)..."></textarea>
@@ -125,11 +216,6 @@
               No assets extracted yet. In the AMD flow, this step is powered by a vision/multimodal model on GPU.
             </div>
           </section>
-          <div class="preset-row">
-            <button class="ghost-button" data-preset="restaurant">Load Restaurant</button>
-            <button class="ghost-button" data-preset="clinic">Load Clinic</button>
-            <button class="ghost-button" data-preset="service">Load Service Business</button>
-          </div>
         </section>
 
         <section id="reasoning" class="panel">
@@ -195,6 +281,11 @@
           </div>
 
           <div id="timeline" class="timeline"></div>
+
+          <div id="generationErrorBanner" class="generation-error-banner" hidden>
+            <p id="generationErrorMessage"></p>
+            <button id="generationRetryBtn" class="primary-button" type="button">Retry</button>
+          </div>
 
           <div class="cognition-panel">
 
@@ -294,27 +385,6 @@
           </div>
         </section>
 
-        <section id="admin" class="panel">
-          <div class="section-title">
-            <h3>Generated Admin Backend</h3>
-            <p>Orders, bookings, and leads appear here after customer actions.</p>
-          </div>
-          <div class="admin-grid">
-            <section>
-              <h4>Orders</h4>
-              <div id="ordersList" class="record-list"></div>
-            </section>
-            <section>
-              <h4>Bookings</h4>
-              <div id="bookingsList" class="record-list"></div>
-            </section>
-            <section>
-              <h4>Leads</h4>
-              <div id="leadsList" class="record-list"></div>
-            </section>
-          </div>
-        </section>
-
         <section id="qa" class="panel">
           <div class="section-title">
             <h3>QA + Readiness</h3>
@@ -351,12 +421,12 @@
               <h4>How it works</h4>
               <ol class="checklist">
                 <li>Fill in the Business Intake form and upload assets.</li>
-                <li>Click <strong>Extract &amp; Build Site</strong> — Pollinations extracts signals.</li>
+                <li>Click <strong>Extract &amp; Build Site</strong> — Grok extracts signals.</li>
                 <li>The pipeline generates your BuildSpec, research, and website preview.</li>
                 <li>Or paste an existing BuildSpec JSON below to apply it directly.</li>
               </ol>
               <div id="amdStatus" class="status-box">
-                Pollinations AI is active. Fill the intake form or paste a BuildSpec to begin.
+                Grok AI is active. Fill the intake form or paste a BuildSpec to begin.
               </div>
             </section>
             <section>

@@ -8,111 +8,84 @@ from agentic_models import (
     RetrievedMemory,
     WebsiteAgentState,
 )
+from learned_memory_store import list_all_memories
 
 
+# Keyed by behavioral archetype (the same 3 keys infer_behavioral_archetypes()
+# always resolves to, via its keyword fallback), not vertical name -- these
+# apply to every business that matches the archetype, not just the handful
+# of named verticals the old vertical-keyed entries covered. "verticals"
+# below is a bonus-match hint for the businesses most commonly associated
+# with each archetype, not a requirement: workflow + behavioral_tag +
+# evidence_tag overlap alone is enough to surface these for anyone else.
 MEMORY_LIBRARY: list[dict[str, Any]] = [
     {
-        "memory_id": "restaurant-fast-order-lane",
+        "memory_id": "fast-impulse-conversion-lane",
         "category": "workflow_pattern",
         "verticals": {"restaurant", "cafe", "bakery"},
         "workflows": {"order"},
-        "behavioral_tags": {"fast_impulse_conversion", "high_intent_repeat_ordering"},
-        "evidence_tags": {"menu", "pickup", "delivery", "combos"},
+        "behavioral_tags": {"fast_impulse_conversion"},
+        "evidence_tags": {"menu", "pickup", "delivery", "discount", "combo", "offers", "pricing"},
         "risk_levels": {"standard"},
-        "title": "Fast order lane wins repeat and high-intent demand",
-        "summary": "High-intent food buyers convert better when the shortest ordering path is visible early and category browsing stays lightweight.",
-        "applicability": "Best when the business already has menu density, pickup intent, or repeat ordering behavior.",
+        "title": "Fast-decision buyers need the shortest path to action, visible immediately",
+        "summary": "High-intent impulse buyers convert better when the shortest path to purchase is visible early, top items/offers appear before long storytelling, and browsing a dense catalog stays scannable via grouping rather than a raw list.",
+        "applicability": "Best when the business sells priced items visitors browse and buy directly (menu, product catalog, ticket/booking inventory), especially with real offers or a large item count.",
         "recommended_actions": [
-            "Expose order CTA in the hero and sticky nav.",
-            "Show top-selling categories before long brand storytelling.",
-            "Keep cart entry visible across menu-heavy pages.",
+            "Expose the primary action (order/buy) in the hero and sticky nav.",
+            "Show top-selling or featured items before long brand storytelling.",
+            "Turn the strongest real offer into one primary conversion banner tied directly to the action path.",
+            "Group a dense catalog into categories/anchors before showing full item detail.",
         ],
         "anti_patterns": [
-            "Do not bury ordering behind About or gallery-first layouts.",
-            "Avoid long introductory copy before showing menu structure.",
+            "Do not bury the primary action behind About or gallery-first layouts.",
+            "Avoid multiple competing offer banners not linked to the action path.",
+            "Avoid single-column item walls with no category scaffold.",
         ],
     },
     {
-        "memory_id": "restaurant-trust-before-order",
+        "memory_id": "high-trust-consideration-lane",
         "category": "trust_pattern",
-        "verticals": {"restaurant", "cafe", "bakery"},
-        "workflows": {"order", "booking"},
-        "behavioral_tags": {"high_trust_consideration", "family_group_decision"},
-        "evidence_tags": {"hours", "location", "pricing", "offers"},
-        "risk_levels": {"standard"},
-        "title": "Trust cues should arrive before decision friction spikes",
-        "summary": "For diners comparing options, visible hours, location, price anchoring, and proof bands reduce hesitation before menu commitment.",
-        "applicability": "Useful when users may compare across venues, make family decisions, or need assurance before ordering or reserving.",
+        "verticals": {"clinic", "consultant", "salon", "tutor"},
+        "workflows": {"booking", "lead", "order"},
+        "behavioral_tags": {"high_trust_consideration"},
+        "evidence_tags": {"hours", "location", "pricing", "offers", "reservations"},
+        "risk_levels": {"standard", "regulated"},
+        "title": "High-consideration buyers need trust established before commitment friction",
+        "summary": "When a decision needs real consideration (a booking, a regulated service, a comparison across venues), visible hours/location, credibility signals, and clear process expectations must arrive before the form or checkout, not after.",
+        "applicability": "Useful whenever users compare options, need reassurance, or face a real commitment (booking, regulated service, family/group decision) rather than an instant purchase.",
         "recommended_actions": [
-            "Place hours, location, and reservation/order expectations near the hero.",
-            "Use proof bands and concise trust signals before deep menu scrolling.",
-            "Make pricing legible early when combos or offers matter.",
+            "Place hours, location, and booking/process expectations near the hero.",
+            "Lead with credibility and proof signals before the booking or contact form.",
+            "Explain response times or what happens next after a submission.",
+            "Make pricing legible early when it materially affects the decision.",
         ],
         "anti_patterns": [
+            "Do not open with an aggressive form before explaining the service.",
             "Do not rely on background imagery as the primary trust signal.",
             "Avoid hiding operational facts below the fold.",
         ],
     },
     {
-        "memory_id": "restaurant-offer-anchoring",
-        "category": "offer_pattern",
-        "verticals": {"restaurant", "cafe", "bakery"},
-        "workflows": {"order"},
-        "behavioral_tags": {"fast_impulse_conversion", "deal_seeking"},
-        "evidence_tags": {"discount", "combo", "offers", "pricing"},
-        "risk_levels": {"standard"},
-        "title": "Offers work best when anchored to a clear primary action",
-        "summary": "Discounts and combos help only when they point directly into the ordering path instead of becoming decorative noise.",
-        "applicability": "Use when uploaded flyers or menu assets show explicit combos, bundles, or discount language.",
-        "recommended_actions": [
-            "Turn the strongest offer into one primary conversion banner.",
-            "Tie offers to category entry or preset cart paths.",
-            "Summarize bundle logic in one line instead of listing OCR-heavy details.",
-        ],
-        "anti_patterns": [
-            "Do not surface every extracted offer verbatim in the hero.",
-            "Avoid multiple competing discount banners in the same viewport.",
-        ],
-    },
-    {
-        "memory_id": "booking-assurance-lane",
+        "memory_id": "urgent-service-decision-lane",
         "category": "workflow_pattern",
-        "verticals": {"clinic", "salon", "consultant", "tutor"},
-        "workflows": {"booking", "lead"},
-        "behavioral_tags": {"high_trust_consideration"},
-        "evidence_tags": {"hours", "address", "phone"},
-        "risk_levels": {"regulated", "standard"},
-        "title": "Booking workflows need assurance before commitment",
-        "summary": "Service businesses convert better when provider credibility and booking expectations are established before form friction.",
-        "applicability": "Useful for booked services where users need trust, availability, and process clarity first.",
-        "recommended_actions": [
-            "Lead with trust proof and process clarity before the booking form.",
-            "Explain response times, appointment flow, or what happens next.",
-            "Use the booking CTA after credibility and logistics appear.",
-        ],
-        "anti_patterns": [
-            "Do not open with an aggressive form before explaining the service.",
-        ],
-    },
-    {
-        "memory_id": "menu-density-scannability",
-        "category": "vertical_pattern",
-        "verticals": {"restaurant", "cafe", "bakery"},
-        "workflows": {"order"},
-        "behavioral_tags": {"exploratory_browser", "family_group_decision"},
-        "evidence_tags": {"menu", "pricing"},
+        "verticals": {"repair_service"},
+        "workflows": {"lead"},
+        "behavioral_tags": {"urgent_service_decision"},
+        "evidence_tags": {"hours", "location", "pricing"},
         "risk_levels": {"standard"},
-        "title": "Dense menus need scannable grouping before detail",
-        "summary": "Users handle large food menus better when categories and anchors appear before long lists of individual items.",
-        "applicability": "Best when asset extraction reveals many menu items or pricing rows.",
+        "title": "Urgent-need buyers need a fast contact path, not a lengthy pitch",
+        "summary": "When the visitor already knows they need help now (a breakdown, an emergency, a same-day need), speed and certainty of contact matter more than persuasion -- a visible phone number, clear service area, and fast quote/contact path win over long explanatory copy.",
+        "applicability": "Best for on-demand or emergency-flavored services where the visitor arrives already needing help, not browsing options.",
         "recommended_actions": [
-            "Use category strips and grouped sections before full item detail.",
-            "Highlight signature or popular items instead of dumping everything at once.",
-            "Keep the first viewport focused on action plus menu orientation.",
+            "Make the phone number prominent and clickable, not buried in a footer.",
+            "State response time or availability expectations plainly.",
+            "Show service area/coverage clearly so visitors know they qualify.",
+            "Keep the quote/contact form short -- every extra field risks losing an urgent visitor.",
         ],
         "anti_patterns": [
-            "Do not paste raw OCR item strings into the hero or badges.",
-            "Avoid single-column item walls with no category scaffold.",
+            "Do not hide the phone number behind a contact form only.",
+            "Avoid long service explanations before the contact path.",
+            "Do not leave service area or coverage unclear.",
         ],
     },
 ]
@@ -180,7 +153,11 @@ def retrieve_memory_bundle(
         state
     )
     scored_memories: list[RetrievedMemory] = []
-    for item in MEMORY_LIBRARY:
+    # MEMORY_LIBRARY is a static, hand-written seed; list_all_memories()
+    # is the real, accumulating record of what critique/simulation/
+    # reflection actually found wrong and what owners actually asked to
+    # fix, so retrieval draws from both instead of only the fixed 5 cards.
+    for item in MEMORY_LIBRARY + list_all_memories():
         score = score_memory_item(
             item,
             query,
@@ -272,6 +249,7 @@ def infer_evidence_tags(
         "goal",
         "details",
         "location",
+        "unique_selling_points",
     ]:
         value = state.business_input.get(
             key,
@@ -316,6 +294,11 @@ def infer_evidence_tags(
             for keyword in keywords
         ):
             tags.add(tag)
+    # A populated business_hours field is itself real evidence of "hours"
+    # information, regardless of whether its exact wording (e.g. "9am-9pm")
+    # happens to contain one of the keyword_map's literal substrings.
+    if str(state.business_input.get("business_hours", "")).strip():
+        tags.add("hours")
     return tags
 
 

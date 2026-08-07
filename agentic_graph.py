@@ -13,10 +13,6 @@ from cognitive_state_api import (
     CognitiveStateAPI,
 )
 
-from cognitive_runtime import (
-    register_node,
-)
-
 from behavioral_blending import (
     build_behavioral_blend,
 )
@@ -30,9 +26,15 @@ from behavioral_validator import (
 )
 from agentic_memory import (
     retrieve_memory_bundle,
+    infer_evidence_tags,
 )
+from learned_memory_store import record_memory
 from agentic_cognition_tools import (
     build_stage_tool_context,
+)
+from agentic_external_tools import (
+    build_research_tool_executor,
+    research_tool_schemas,
 )
 
 from business_archetype_mapper import (
@@ -42,11 +44,9 @@ from business_archetype_mapper import (
 
 from agentic_models import (
     CognitiveEvent,
-    CognitiveHealthReport,
     AgentDecision,
     SimulationReport,
     WorkflowSimulation,
-    DebateOutcome,
     ReflectionReport,
     AssetExtraction,
     BusinessProfile,
@@ -78,8 +78,6 @@ from agentic_planner import (
     PlannerGenerationError,
     parse_json_object,
 )
-from vertical_rulebooks import VERTICAL_RULEBOOKS
-
 try:
     from langgraph.graph import END, START, StateGraph
 except ImportError:  # pragma: no cover
@@ -219,13 +217,26 @@ def infer_vertical_from_business_input(
     return "unknown"
 
 
+# Deliberately substring/keyword based, not an exact-match list -- vertical
+# is now free-form text the LLM writes itself (e.g. "law_firm",
+# "financial_advisor", "childcare_center"), not a fixed enum, so an exact-
+# match list would only ever catch the couple of spellings written into it.
+_REGULATED_VERTICAL_KEYWORDS = (
+    "clinic", "medical", "dental", "health", "doctor", "physician",
+    "therapist", "therapy", "counsel", "psychiatr", "psycholog",
+    "legal", "law", "attorney",
+    "financial", "finance", "invest", "insurance", "accounting", "tax",
+    "pharma", "pharmacy",
+    "childcare", "daycare", "eldercare", "nursing",
+    "consultant", "consulting",
+)
+
+
 def infer_risk_level_from_vertical(
     vertical: str,
 ) -> str:
-    if vertical in {
-        "clinic",
-        "consultant",
-    }:
+    lowered = (vertical or "").lower()
+    if any(keyword in lowered for keyword in _REGULATED_VERTICAL_KEYWORDS):
         return "regulated"
     return "standard"
 
@@ -378,20 +389,6 @@ def artifact_confidence(
     )
 
 
-def artifact_used_fallback(
-    state: WebsiteAgentState,
-    artifact_key: str,
-) -> bool:
-    artifact = artifact_status(
-        state,
-        artifact_key,
-    )
-    return bool(
-        artifact
-        and artifact.status == "fallback"
-    )
-
-
 def candidate_decision_scores(
     state: WebsiteAgentState,
 ) -> list[dict[str, Any]]:
@@ -403,11 +400,6 @@ def candidate_decision_scores(
             state.critique_reports or []
         )
     }
-    debate_bonus_id = (
-        state.debate_outcome.winning_candidate_id
-        if state.debate_outcome
-        else ""
-    )
     results: list[dict[str, Any]] = []
     for candidate in (
         state.design_candidates
@@ -420,12 +412,6 @@ def candidate_decision_scores(
         confidence = normalize_confidence(
             candidate.confidence
         )
-        debate_bonus = (
-            0.35
-            if debate_bonus_id
-            and debate_bonus_id == candidate_attr(candidate,"candidate_id","unknown",)
-            else 0.0
-        )
         realism_factor = (
             (
                 state.simulation_report.overall_realism_score
@@ -436,10 +422,9 @@ def candidate_decision_scores(
         )
         weighted_score = round(
             (
-                critique_score * 0.55
+                critique_score * 0.60
                 + confidence * 10 * 0.25
                 + realism_factor * 10 * 0.15
-                + debate_bonus * 10 * 0.05
             ),
             2,
         )
@@ -453,10 +438,6 @@ def candidate_decision_scores(
                 ),
                 "confidence": round(
                     confidence,
-                    2,
-                ),
-                "debate_bonus": round(
-                    debate_bonus,
                     2,
                 ),
             }
@@ -559,7 +540,6 @@ def set_finalization_decision(
             "design_candidates",
             "critique_reports",
             "simulation_report",
-            "debate_outcome",
         ],
     )
     update_state_artifact(
@@ -583,7 +563,6 @@ def set_finalization_decision(
             "design_candidates",
             "critique_reports",
             "simulation_report",
-            "debate_outcome",
         ],
         outputs=[
             "finalization_decision",
@@ -601,23 +580,6 @@ def set_finalization_decision(
         ),
     )
     return decision
-
-
-def external_planner_unhealthy(
-    planner: ModelJsonPlanner,
-) -> bool:
-    return bool(
-        getattr(
-            planner,
-            "failure_count",
-            0,
-        )
-        or getattr(
-            planner,
-            "request_errors",
-            [],
-        )
-    )
 
 
 def invoke_cognition_tools(
@@ -663,13 +625,6 @@ def invoke_cognition_tools(
 def build_fallback_strategy_hypotheses(
     state: WebsiteAgentState,
 ) -> StrategyHypothesisSet:
-    vertical = (
-        state.business_profile.vertical
-        if state.business_profile
-        else infer_vertical_from_business_input(
-            state
-        )
-    )
     goal = (
         state.business_profile.goal
         if state.business_profile
@@ -681,11 +636,19 @@ def build_fallback_strategy_hypotheses(
         )
     )
 
-    if vertical in {
-        "restaurant",
-        "cafe",
-        "bakery",
-    }:
+    # Keyed off the behavioral archetype (covers every business via
+    # infer_behavioral_archetypes()'s keyword fallback), not a hardcoded
+    # vertical-name list -- this only fires when the real strategy_hypotheses
+    # LLM call itself failed, so it's a rare path, but should still reflect
+    # the actual business rather than silently defaulting for anything that
+    # isn't literally "restaurant"/"cafe"/"bakery".
+    dominant_behavior = (
+        state.behavioral_contexts[0].key
+        if state.behavioral_contexts
+        else "unknown"
+    )
+
+    if dominant_behavior == "fast_impulse_conversion":
         return StrategyHypothesisSet(
             strategies=[
                 {
@@ -787,89 +750,62 @@ def build_fallback_strategy_hypotheses(
     )
 
 
-def build_fallback_reflection_report(
+def compute_reflection_report(
     state: WebsiteAgentState,
 ) -> ReflectionReport:
-    candidate_count = len(
-        state.design_candidates
+    """Deterministic replacement for what used to be a full LLM call.
+
+    None of reflection's self-rated numbers (exploration_quality,
+    reasoning_quality, etc.) were ever read by anything downstream except as
+    display text -- the only two real consumers are should_expand_exploration
+    (reflection_router's iteration-3 gate) and improvement_actions (folded
+    into the final generation prompt via code_generator._extract_known_risks).
+    Both are cheaper and more grounded computed directly from the critique
+    scores already produced than by asking a model to self-report quality
+    metrics nobody checks.
+    """
+    candidate_count = len(state.design_candidates)
+    critique_reports = state.critique_reports or []
+
+    scores = sorted(
+        (average_critique_score(report) for report in critique_reports),
+        reverse=True,
     )
-    critique_count = len(
-        state.critique_reports
+    top_score = scores[0] if scores else 5.0
+    runner_up = scores[1] if len(scores) > 1 else max(top_score - 2.0, 0.0)
+    separation = top_score - runner_up
+
+    strategic_diversity = 8 if candidate_count >= 2 else 5
+    critique_depth = 7 if len(critique_reports) >= 2 else 5
+    convergence_risk = 4 if separation >= 1.5 else 7
+
+    weakest_report = min(
+        critique_reports,
+        key=average_critique_score,
+        default=None,
     )
-    strategic_diversity = (
-        8
-        if candidate_count >= 2
-        else 5
-    )
-    critique_depth = (
-        7
-        if critique_count >= 2
-        else 5
-    )
-    convergence_risk = (
-        4
-        if strategic_diversity >= 7
-        else 7
+    improvement_actions = (
+        list(weakest_report.revision_instructions[:2])
+        if weakest_report
+        else []
     )
 
     return ReflectionReport(
-        exploration_quality=7,
+        exploration_quality=min(10, round(len(state.candidate_history) * 10 / 4)) or 5,
         strategic_diversity=strategic_diversity,
         critique_depth=critique_depth,
         reasoning_quality=6,
         convergence_risk=convergence_risk,
         observations=[
-            "Used local reflection fallback because the external reasoning model was unavailable.",
-            f"Reviewed {candidate_count} candidate directions and {critique_count} critique reports.",
+            f"Reviewed {candidate_count} candidate direction(s) and {len(critique_reports)} critique report(s).",
         ],
-        improvement_actions=[
-            "Preserve structural diversity between candidates.",
-            "Tie final rationale more directly to available business evidence.",
-        ],
+        improvement_actions=improvement_actions,
+        # Candidates that are barely differentiated in critique score after
+        # a full pass haven't produced a clear winner yet -- worth a broader
+        # exploration pass before finalizing, capped at 3 iterations total.
         should_expand_exploration=(
-            candidate_count < 2
+            separation < 1.0 and candidate_count >= 1 and state.revision_iteration < 3
         ),
-    )
-
-
-def build_fallback_debate_outcome(
-    state: WebsiteAgentState,
-) -> DebateOutcome:
-    candidates = state.design_candidates or []
-    winner = candidates[0] if candidates else None
-    loser = (
-        candidates[1]
-        if len(candidates) > 1
-        else winner
-    )
-    winning_candidate_id = (
-        winner.candidate_id
-        if winner
-        else "candidate-1"
-    )
-    losing_candidate_id = (
-        loser.candidate_id
-        if loser
-        else winning_candidate_id
-    )
-
-    return DebateOutcome(
-        winning_candidate_id=winning_candidate_id,
-        losing_candidate_id=losing_candidate_id,
-        winner_reasoning="Selected the strongest available candidate using local fallback debate logic.",
-        loser_reasoning="Alternative candidate remains viable but was ranked lower on immediate conversion clarity.",
-        tradeoff_analysis=[
-            "Fallback debate favored clarity and action hierarchy.",
-            "Alternative strategies may still offer stronger trust or exploration benefits.",
-        ],
-        synthesis_opportunities=[
-            "Blend stronger trust cues into the winning candidate.",
-            "Retain exploration elements without delaying the primary action too much.",
-        ],
-        strategic_observations=[
-            "Debate fallback preserved forward progress while the external model was unavailable.",
-        ],
-        confidence=0.62,
     )
 
 
@@ -945,7 +881,7 @@ def build_fallback_design_candidates(
     required_pages = (
         state.requirements_spec.required_pages
         if state.requirements_spec
-        else [PageType.HOME]
+        else ["home"]
     )
 
     workflow_kind = (
@@ -1362,10 +1298,72 @@ def remove_forbidden_semantics(
     return cleaned
 
 
+def _record_run_memories(state: WebsiteAgentState) -> None:
+    """Writes the top real findings from this run into the accumulating
+    learned-memory store (learned_memory_store.py) -- one from critique
+    (on the actual chosen candidate), one from simulation, one from
+    reflection, each best-effort and deduped by the store itself. This is
+    what makes agentic_memory.py's retrieval reflect what the system has
+    actually found wrong before, not just the 5 static seed cards."""
+    if not state.business_profile:
+        return
+    vertical = state.business_profile.vertical
+    subtype = state.business_profile.subtype
+    risk_level = state.business_profile.risk_level.value
+    primary_workflow = (
+        state.business_identity.primary_workflow.value
+        if state.business_identity
+        else ""
+    )
+    behavioral_archetypes = (
+        list(state.business_identity.behavioral_archetypes)
+        if state.business_identity
+        else []
+    )
+    evidence_tags = sorted(infer_evidence_tags(state))
+
+    def _write(source: str, title: str, summary: str, recommended_action: str = "") -> None:
+        try:
+            record_memory(
+                business_id="",
+                vertical=vertical,
+                subtype=subtype,
+                risk_level=risk_level,
+                primary_workflow=primary_workflow,
+                behavioral_archetypes=behavioral_archetypes,
+                evidence_tags=evidence_tags,
+                source=source,
+                title=title,
+                summary=summary,
+                recommended_action=recommended_action,
+            )
+        except Exception as exc:
+            logger.warning("Failed to record learned memory (%s): %s", source, exc)
+
+    chosen_candidate_id = (
+        state.design_spec.chosen_candidate_id if state.design_spec else ""
+    )
+    matching_critique = next(
+        (c for c in state.critique_reports if c.candidate_id == chosen_candidate_id),
+        (state.critique_reports[0] if state.critique_reports else None),
+    )
+    if matching_critique and matching_critique.weaknesses:
+        weakness = matching_critique.weaknesses[0]
+        action = matching_critique.revision_instructions[0] if matching_critique.revision_instructions else ""
+        _write("critique", f"Critique weakness for {vertical or 'this'} businesses", weakness, action)
+
+    if state.simulation_report and state.simulation_report.systemic_issues:
+        issue = state.simulation_report.systemic_issues[0]
+        _write("simulation", f"Simulation friction for {vertical or 'this'} businesses", issue)
+
+    if state.reflection_report and state.reflection_report.improvement_actions:
+        action = state.reflection_report.improvement_actions[0]
+        _write("reflection", f"Process improvement for {vertical or 'this'} businesses", action)
+
+
 def build_agent_graph(planner: ModelJsonPlanner) -> Any:
     if StateGraph is None:
         raise ImportError("langgraph is not installed yet")
-    @register_node("business_profile")
     def business_profile_node(
         state: WebsiteAgentState,
     ) -> WebsiteAgentState:
@@ -1542,21 +1540,19 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
         vertical = (
             state.business_profile.vertical
         )
-
+        # vertical is free-form text the LLM writes itself (e.g.
+        # "photography_studio", "law_firm", "saas_product" -- see
+        # build_business_profile_prompt), not constrained to the Vertical
+        # enum, so comparing it against a handful of exact enum values
+        # silently misses almost every real business. dominant_behavior
+        # (the behavioral archetype) already generalizes across every
+        # business via infer_behavioral_archetypes()'s keyword fallback,
+        # so derive primary_workflow from that instead.
         primary_workflow = (
-            WorkflowType.BOOKING
-            if vertical in {
-                Vertical.CLINIC,
-                Vertical.SALON,
-                Vertical.CONSULTANT,
-                Vertical.TUTOR,
-            }
-            else WorkflowType.ORDER
-            if vertical in {
-                Vertical.RESTAURANT,
-                Vertical.CAFE,
-                Vertical.BAKERY,
-            }
+            WorkflowType.ORDER
+            if dominant_behavior == "fast_impulse_conversion"
+            else WorkflowType.BOOKING
+            if dominant_behavior == "high_trust_consideration"
             else WorkflowType.LEAD
         )
 
@@ -1599,22 +1595,28 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                         and state.requirements_spec.required_pages
                     )
                     else [
-                        PageType.HOME,
-                        PageType.CONTACT,
+                        "home",
+                        "contact",
                     ]
                 )
             ]
         )
 
+        # Same issue as primary_workflow above -- match on keywords within
+        # the free-form vertical text (covers "diner", "pizzeria",
+        # "dental_clinic", "medical_center", etc.), not exact enum values.
+        vertical_lower = vertical.lower()
         forbidden_semantics = (
             ["medical", "doctor", "patient"]
-            if vertical in {
-                Vertical.RESTAURANT,
-                Vertical.CAFE,
-                Vertical.BAKERY,
-            }
+            if any(
+                keyword in vertical_lower
+                for keyword in ("restaurant", "cafe", "coffee", "bakery", "food", "dining", "kitchen", "eatery")
+            )
             else ["menu", "pizza", "reservations"]
-            if vertical == Vertical.CLINIC
+            if any(
+                keyword in vertical_lower
+                for keyword in ("clinic", "medical", "dental", "health", "doctor", "hospital", "pharma")
+            )
             else []
         )
 
@@ -1816,7 +1818,6 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
 
         return state
 
-    @register_node("human_input")
     def human_input_node(
         state: WebsiteAgentState,
     ) -> WebsiteAgentState:
@@ -1826,6 +1827,20 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
         if questions:
             state.human_input_required = True
             state.pending_clarification_questions = questions
+            # Whichever router sent us here (requirements_router,
+            # simulation_router) tries to set state.resume_from_node itself,
+            # but that mutation doesn't reliably survive -- conditional-edge
+            # functions aren't graph nodes, so LangGraph doesn't propagate
+            # their side-effect mutations the way it propagates a node's
+            # return value. This node's own mutation, made right before it
+            # raises, is what actually reaches HumanInputRequired.state.
+            # Derive the resume point from a field only a real node sets:
+            # simulation_report exists only after simulation_node has run.
+            state.resume_from_node = (
+                "revise"
+                if state.simulation_report is not None
+                else "strategy_hypotheses"
+            )
             add_reasoning_note(
                 state,
                 (
@@ -1846,24 +1861,10 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
         )
         return state
 
-    @register_node("requirements")
     def requirements_node(
         state: WebsiteAgentState,
     ) -> WebsiteAgentState:
         
-        # state.execution_trace.append(
-        #     "requirements"
-        # )
-
-        # state.node_visit_counts[
-        #     "requirements"
-        # ] = (
-        #     state.node_visit_counts.get(
-        #         "requirements",
-        #         0,
-        #     )
-        #     + 1
-        # )
         fallback_used = False
         source_type = ProvenanceSource.EXTERNAL_MODEL
         tool_context = invoke_cognition_tools(
@@ -1964,11 +1965,6 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
             )
 
-        apply_pricing_clarification_guard(
-            state,
-            state.requirements_spec,
-        )
-
         emit_cognitive_event(
             state=state,
             event_type="requirements_generated",
@@ -2025,25 +2021,11 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
 
         return state
     
-    @register_node("strategy_hypotheses")
     def strategy_hypothesis_node(
         state: WebsiteAgentState,
     ) -> WebsiteAgentState:
         state.resume_from_node = None
 
-        # state.execution_trace.append(
-        #     "strategy_hypotheses"
-        # )
-
-        # state.node_visit_counts[
-        #     "strategy_hypotheses"
-        # ] = (
-        #     state.node_visit_counts.get(
-        #         "strategy_hypotheses",
-        #         0,
-        #     )
-        #     + 1
-        # )
         fallback_used = False
         source_type = ProvenanceSource.EXTERNAL_MODEL
         tool_context = invoke_cognition_tools(
@@ -2058,10 +2040,18 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
 
         try:
 
-            raw = planner.generate_text(
+            research_executor, research_calls = build_research_tool_executor()
+            raw = planner.generate_with_tools(
                 prompt,
+                research_tool_schemas(),
+                research_executor,
                 temperature=0.7,
+                max_new_tokens=700,
+                max_iterations=6,
+                timeout=60.0,
             )
+            if research_calls["calls"]:
+                logger.info("Strategy hypothesis research: %d tool call(s)", research_calls["calls"])
 
             parsed = parse_json_object(
                 raw
@@ -2186,7 +2176,6 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
         )
 
         return state
-    @register_node("design_candidates")
     def design_candidates_node(
         state: WebsiteAgentState,
     ) -> WebsiteAgentState:
@@ -2369,7 +2358,6 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
         )
 
         return state
-    @register_node("critique")
     def critique_node(
         state: WebsiteAgentState,
     ) -> WebsiteAgentState:
@@ -2379,19 +2367,6 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
             CognitiveStateAPI(state)
         )
 
-        # state.execution_trace.append(
-        #     "critique"
-        # )
-
-        # state.node_visit_counts[
-        #     "critique"
-        # ] = (
-        #     state.node_visit_counts.get(
-        #         "critique",
-        #         0,
-        #     )
-        #     + 1
-        # )
         fallback_used = False
         source_type = ProvenanceSource.EXTERNAL_MODEL
         tool_context = invoke_cognition_tools(
@@ -2408,7 +2383,7 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
 
             raw = planner.generate_text(
                 prompt,
-                max_new_tokens=650,
+                max_new_tokens=1400,
                 temperature=0.35,
             )
 
@@ -2576,96 +2551,15 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
         )
         return state
     
-    @register_node("reflection")
     def reflection_node(
         state: WebsiteAgentState,
     ) -> WebsiteAgentState:
-         
-        cognition = (CognitiveStateAPI(state))
-        
-        # state.execution_trace.append(
-        #     "reflection"
-        # )
-
-        # state.node_visit_counts[
-        #     "reflection"
-        # ] = (
-        #     state.node_visit_counts.get(
-        #         "reflection",
-        #         0,
-        #     )
-        #     + 1
-        # )
+        # Deterministic by design -- see compute_reflection_report's
+        # docstring for why this doesn't need its own LLM call.
+        source_type = ProvenanceSource.HEURISTIC_FALLBACK
         fallback_used = False
-        source_type = ProvenanceSource.EXTERNAL_MODEL
-        tool_context = invoke_cognition_tools(
-            state,
-            "reflection",
-        )
 
-        prompt = build_reflection_prompt(
-            state,
-            tool_context,
-        )
-
-        try:
-
-            reflection = (
-                planner.generate_model(
-                    prompt,
-                    ReflectionReport,
-                    temperature=0.25,
-                )
-            )
-
-        except PlannerGenerationError as exc:
-            fallback_used = True
-            source_type = ProvenanceSource.HEURISTIC_FALLBACK
-
-            logger.warning(
-                "Reflection fallback triggered: %s",
-                exc,
-            )
-
-            state.reasoning_notes.append(
-                (
-                    "Reflection generation used "
-                    "deterministic fallback "
-                    "because external reasoning "
-                    "failed."
-                )
-            )
-
-            add_uncertainty(state, 0.15)
-
-            reflection = (
-                build_fallback_reflection_report(
-                    state
-                )
-            )
-
-        except (ValidationError, ValueError) as exc:
-            print("\nVALIDATION ERROR\n")
-            print(exc)
-            print("\nRAW OUTPUT\n")
-            print(locals().get("raw"))
-            fallback_used = True
-            source_type = ProvenanceSource.LOCAL_FALLBACK
-
-            state.reasoning_notes.append(
-                (
-                    "Reflection generation failed. "
-                    "Used local fallback reflection."
-                )
-            )
-
-            add_uncertainty(state, 0.1)
-
-            reflection = (
-                build_fallback_reflection_report(
-                    state
-                )
-            )
+        reflection = compute_reflection_report(state)
 
         state.reflection_report = (
             reflection
@@ -2768,201 +2662,12 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
             fallback_used=fallback_used,
         )
 
-        state.cognitive_health = (
-            CognitiveHealthReport(
-
-                exploration_quality=(
-                    cognition
-                    .get_reasoning_diversity()
-                ),
-
-                reasoning_diversity=(
-                    cognition
-                    .get_reasoning_diversity()
-                ),
-
-                convergence_risk=(
-                    cognition
-                    .get_convergence_risk()
-                ),
-
-                critique_depth=0.74,
-
-                hallucination_risk=(
-                    cognition
-                    .get_hallucination_risk()
-                ),
-
-                cognition_stability=(
-                    1.0
-                    -
-                    cognition
-                    .get_convergence_risk()
-                ),
-
-                notes=[
-                    (
-                        "Meta-cognitive evaluation "
-                        "computed from runtime state."
-                    )
-                ],
-            )
-        )
-        return state
-    
-    @register_node("debate")
-    def debate_node(
-        state: WebsiteAgentState,
-    ) -> WebsiteAgentState:
-        fallback_used = False
-        source_type = ProvenanceSource.EXTERNAL_MODEL
-        tool_context = invoke_cognition_tools(
-            state,
-            "debate",
-        )
-
-        prompt = build_debate_prompt(
-            state,
-            tool_context,
-        )
-
-        try:
-
-            outcome = (
-                planner.generate_model(
-                    prompt,
-                    DebateOutcome,
-                    temperature=0.75,
-                )
-            )
-
-        except PlannerGenerationError as exc:
-            fallback_used = True
-            source_type = ProvenanceSource.HEURISTIC_FALLBACK
-
-            logger.warning(
-                "Debate fallback triggered: %s",
-                exc,
-            )
-
-            state.reasoning_notes.append(
-                (
-                    "Debate generation used "
-                    "deterministic fallback "
-                    "because external reasoning "
-                    "failed."
-                )
-            )
-
-            add_uncertainty(state, 0.15)
-
-            outcome = (
-                build_fallback_debate_outcome(
-                    state
-                )
-            )
-
-        except (ValidationError, ValueError) as exc:
-            print("\nVALIDATION ERROR\n")
-            print(exc)
-            print("\nRAW OUTPUT\n")
-            print(locals().get("raw"))
-            fallback_used = True
-            source_type = ProvenanceSource.LOCAL_FALLBACK
-
-            state.reasoning_notes.append(
-                (
-                    "Debate generation failed. "
-                    "Used local fallback debate."
-                )
-            )
-
-            add_uncertainty(state, 0.1)
-
-            outcome = (
-                build_fallback_debate_outcome(
-                    state
-                )
-            )
-
-        state.debate_outcome = (
-            outcome
-        )
-
-        state.reasoning_notes.append(
-            (
-                "Debate agent compared "
-                "candidate strategies directly."
-            )
-        )
-
-        state.reasoning_notes.append(
-            (
-                f"Winning candidate: "
-                f"{outcome.winning_candidate_id}"
-            )
-        )
-
-        state.reasoning_notes.extend(
-            [
-                f"Debate insight: {obs}"
-                for obs in (
-                    outcome
-                    .strategic_observations
-                )
-            ]
-        )
-
-        record_provenance(
-            state,
-            artifact_key="debate_outcome",
-            stage="debate",
-            source_type=source_type,
-            summary=f"Selected winning candidate {outcome.winning_candidate_id}.",
-            confidence=outcome.confidence,
-            fallback_used=fallback_used,
-            supporting_keys=["strategy_hypotheses", "design_candidates", "critique_reports"],
-        )
-        update_state_artifact(
-            state,
-            artifact_key="debate_outcome",
-            stage="debate",
-            source_type=source_type,
-            confidence=outcome.confidence,
-            summary="Winning candidate selected through debate.",
-            status="fallback" if fallback_used else "derived",
-        )
-        record_lineage(
-            state,
-            stage="debate",
-            decision="selected_candidate_direction",
-            confidence=outcome.confidence,
-            inputs=["strategy_hypotheses", "design_candidates", "critique_reports"],
-            outputs=["debate_outcome"],
-            summary="Compared candidates and chose the strongest direction.",
-            fallback_used=fallback_used,
-        )
-
         return state
 
-    @register_node("simulation")
     def simulation_node(
         state: WebsiteAgentState,
     ) -> WebsiteAgentState:
 
-        # state.execution_trace.append(
-        #     "simulation"
-        # )
-
-        # state.node_visit_counts[
-        #     "simulation"
-        # ] = (
-        #     state.node_visit_counts.get(
-        #         "simulation",
-        #         0,
-        #     )
-        #     + 1
-        # )
         fallback_used = False
         source_type = ProvenanceSource.EXTERNAL_MODEL
         tool_context = invoke_cognition_tools(
@@ -2979,7 +2684,7 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
         try:
             raw = planner.generate_text(
                 prompt,
-                max_new_tokens=520,
+                max_new_tokens=1000,
                 temperature=0.35,
             )
             parsed = parse_json_object(
@@ -3245,7 +2950,7 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
             summary=f"Simulated user realism score {simulation.overall_realism_score}/10.",
             confidence=simulation_confidence,
             fallback_used=fallback_used,
-            supporting_keys=["design_candidates", "debate_outcome", "critique_history"],
+            supporting_keys=["design_candidates", "critique_history"],
         )
         update_state_artifact(
             state,
@@ -3261,7 +2966,7 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
             stage="simulation",
             decision="simulated_candidate_realism",
             confidence=simulation_confidence,
-            inputs=["design_candidates", "debate_outcome", "critique_history"],
+            inputs=["design_candidates", "critique_history"],
             outputs=["simulation_report"],
             summary="Tested behavioral realism of planned flows.",
             fallback_used=fallback_used,
@@ -3269,7 +2974,6 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
 
         return state
     
-    @register_node("revise")
     def revise_node(
         state: WebsiteAgentState,
     ) -> WebsiteAgentState:
@@ -3286,12 +2990,18 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
             tool_context,
         )
 
-        raw = planner.generate_text(
-            prompt,
-            temperature=0.25,
-        )
-
         try:
+            research_executor, research_calls = build_research_tool_executor()
+            raw = planner.generate_with_tools(
+                prompt,
+                research_tool_schemas(),
+                research_executor,
+                temperature=0.25,
+                max_iterations=6,
+            )
+            if research_calls["calls"]:
+                logger.info("Design finalization research: %d tool call(s)", research_calls["calls"])
+
             parsed = parse_json_object(
                 raw
             )
@@ -3329,6 +3039,33 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                         )
                     )
                 )
+
+        except PlannerGenerationError as exc:
+            fallback_used = True
+            source_type = ProvenanceSource.HEURISTIC_FALLBACK
+
+            logger.warning(
+                "Revision fallback triggered: %s",
+                exc,
+            )
+
+            state.reasoning_notes.append(
+                (
+                    "Final revision used deterministic "
+                    "fallback because external reasoning "
+                    "failed."
+                )
+            )
+
+            add_uncertainty(state, 0.15)
+
+            state.design_spec = (
+                DesignSpec.model_validate(
+                    build_fallback_design_spec(
+                        state
+                    )
+                )
+            )
 
         except Exception:
             fallback_used = True
@@ -3391,252 +3128,9 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
             fallback_used=fallback_used,
         )
 
+        _record_run_memories(state)
+
         return state
-
-    def critique_router(
-        state: WebsiteAgentState,
-    ) -> str:
-        # Hard revision cap to prevent endless loops if routing keeps requesting regeneration.
-        # Note: design_candidates_node increments revision_iteration.
-        MAX_REVISION_ITERATIONS = 3
-        COMMIT_REVISION_ITERATION = 2
-        sim_score = (
-            state.simulation_report.overall_realism_score
-            if state.simulation_report
-            else 0
-        )
-        debate_conf = (
-            state.debate_outcome.confidence
-            if state.debate_outcome
-            else 0.0
-        )
-        reflection_expand = bool(
-            state.reflection_report
-            and state.reflection_report.should_expand_exploration
-        )
-        if state.revision_iteration >= MAX_REVISION_ITERATIONS:
-            state.reasoning_notes.append(
-                (
-                    "Reached maximum revision iterations "
-                    f"({MAX_REVISION_ITERATIONS}). Proceeding to final synthesis."
-                )
-            )
-            set_finalization_decision(
-                state,
-                authority="revision_cap",
-                reason="Reached maximum revision iterations and must finalize best-so-far output.",
-                supporting_signals=[
-                    f"revision_iteration={state.revision_iteration}",
-                ],
-            )
-            return "revise"
-
-        weak_candidates = 0
-        average_scores = []
-
-        for critique in (
-            state.critique_reports
-        ):
-            avg = (
-                sum(
-                    score.score
-                    for score in critique.scores
-                )
-                / len(critique.scores)
-            )
-            average_scores.append(avg)
-
-            if avg < 7:
-                weak_candidates += 1
-
-        overall_average = (
-            sum(average_scores)
-            / max(len(average_scores), 1)
-        )
-
-        behavioral_issues = (
-            evaluate_behavioral_coherence(
-                state
-            )
-        )
-
-        good_enough = (
-            overall_average >= 7.0
-            and sim_score >= 7
-            and debate_conf >= 0.6
-        )
-
-        if behavioral_issues:
-
-            state.reasoning_notes.extend(
-                [
-                    (
-                        "Behavioral validation: "
-                        + issue
-                    )
-                    for issue in behavioral_issues
-                ]
-            )
-
-            if (
-                state.revision_iteration < 2
-            ):
-
-                state.reasoning_notes.append(
-                    (
-                        "Behavioral coherence "
-                        "validation failed. "
-                        "Regenerating candidates."
-                    )
-                )
-
-                return "design_candidates"
-
-        if good_enough:
-            state.reasoning_notes.append(
-                (
-                    "Convergence threshold met "
-                    f"(avg={round(overall_average, 2)}, "
-                    f"sim={sim_score}, "
-                    f"debate={round(debate_conf, 2)}). "
-                    "Finalizing best available plan."
-                )
-            )
-            set_finalization_decision(
-                state,
-                authority="convergence_threshold",
-                reason="Convergence threshold met with sufficiently strong critique, simulation, and debate signals.",
-                supporting_signals=[
-                    f"overall_average={round(overall_average, 2)}",
-                    f"simulation_score={sim_score}",
-                    f"debate_confidence={round(debate_conf, 2)}",
-                ],
-            )
-            return "revise"
-
-        if (
-            external_planner_unhealthy(
-                planner
-            )
-            and state.revision_iteration >= 1
-        ):
-            state.reasoning_notes.append(
-                (
-                    "External planner is degraded. "
-                    "Avoiding further regeneration and finalizing best-so-far output."
-                )
-            )
-            set_finalization_decision(
-                state,
-                authority="planner_health_guard",
-                reason="External planner health is degraded after prior exploration, so the system is finalizing the strongest available candidate.",
-                supporting_signals=[
-                    f"failure_count={getattr(planner, 'failure_count', 0)}",
-                    f"revision_iteration={state.revision_iteration}",
-                ],
-            )
-            return "revise"
-
-        if (
-            state.revision_iteration >= COMMIT_REVISION_ITERATION
-            and overall_average >= 6.6
-            and sim_score >= 6
-        ):
-            state.reasoning_notes.append(
-                (
-                    "Good-enough threshold reached after repeated exploration "
-                    f"(avg={round(overall_average, 2)}, sim={sim_score}). "
-                    "Committing best-so-far candidate."
-                )
-            )
-            set_finalization_decision(
-                state,
-                authority="good_enough_commit",
-                reason="Repeated exploration produced a good-enough candidate, so the system is committing best-so-far instead of continuing to search.",
-                supporting_signals=[
-                    f"overall_average={round(overall_average, 2)}",
-                    f"simulation_score={sim_score}",
-                    f"revision_iteration={state.revision_iteration}",
-                ],
-            )
-            return "revise"
-
-        if (
-            state.simulation_report
-            and state.simulation_report.overall_realism_score < 6
-            and state.revision_iteration < COMMIT_REVISION_ITERATION
-        ):
-            state.reasoning_notes.append(
-                (
-                    "Simulation realism too low. "
-                    "Regenerating workflows."
-                )
-            )
-            return "design_candidates"
-
-        if (
-            state.debate_outcome
-            and state.debate_outcome.confidence < 0.55
-            and state.revision_iteration < COMMIT_REVISION_ITERATION
-        ):
-            state.reasoning_notes.append(
-                (
-                    "Debate confidence low. "
-                    "Expanding strategic search."
-                )
-            )
-            return "design_candidates"
-
-        if (
-            reflection_expand
-            and state.revision_iteration < COMMIT_REVISION_ITERATION
-        ):
-            state.reasoning_notes.append(
-                (
-                    "Reflection agent requested "
-                    "expanded strategic exploration."
-                )
-            )
-            return "design_candidates"
-
-        threshold = (
-            1
-            if state.uncertainty_score > 0.35
-            else 0
-        )
-
-        if (
-            weak_candidates > threshold
-        ):
-            state.reasoning_notes.append(
-                (
-                    "Critique quality insufficient "
-                    f"(avg={round(overall_average, 2)}). "
-                    "Regenerating candidates "
-                    "with deeper exploration."
-                )
-            )
-            return "design_candidates"
-
-        state.reasoning_notes.append(
-            (
-                "Critique quality acceptable "
-                f"(avg={round(overall_average, 2)}). "
-                "Proceeding to revision "
-                "and synthesis."
-            )
-        )
-        set_finalization_decision(
-            state,
-            authority="synthesis_gate",
-            reason="Critique quality is acceptable and no stronger reason to continue exploration remains.",
-            supporting_signals=[
-                f"overall_average={round(overall_average, 2)}",
-                f"weak_candidates={weak_candidates}",
-            ],
-        )
-
-        return "revise"
 
     def requirements_router(
         state: WebsiteAgentState,
@@ -3662,19 +3156,14 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
             )
 
-            # state.execution_trace.append(
-            #     (
-            #         "requirements -> strategy_hypotheses "
-            #         "(loop protection)"
-            #     )
-            # )
 
             return "strategy_hypotheses"
 
         if unanswered_clarification_questions(
             state
         ):
-            state.resume_from_node = "strategy_hypotheses"
+            # resume_from_node is set by human_input_node itself, not here --
+            # see its docstring-comment for why a router's mutation isn't reliable.
             state.reasoning_notes.append(
                 (
                     "Requirements generated operational "
@@ -3695,11 +3184,6 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
             )
 
-            # state.execution_trace.append(
-            #     (
-            #         "requirements -> memory_retrieval"
-            #     )
-            # )
 
             return "memory_retrieval"
 
@@ -3710,11 +3194,6 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
             )
         )
 
-        # state.execution_trace.append(
-        #     (
-        #         "requirements -> strategy_hypotheses"
-        #     )
-        # )
 
         return "strategy_hypotheses"
 
@@ -3724,7 +3203,8 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
         if unanswered_clarification_questions(
             state
         ):
-            state.resume_from_node = "revise"
+            # resume_from_node is set by human_input_node itself, not here --
+            # see its docstring-comment for why a router's mutation isn't reliable.
             state.reasoning_notes.append(
                 (
                     "Simulation generated clarification "
@@ -3760,12 +3240,6 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
             )
 
-            # state.execution_trace.append(
-            #     (
-            #         "strategy_hypotheses -> design_candidates "
-            #         "(loop protection)"
-            #     )
-            # )
 
             return "design_candidates"
 
@@ -3780,11 +3254,6 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
             )
 
-            # state.execution_trace.append(
-            #     (
-            #         "strategy_hypotheses -> strategy_hypotheses"
-            #     )
-            # )
 
             return "strategy_hypotheses"
 
@@ -3795,11 +3264,6 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
             )
         )
 
-        # state.execution_trace.append(
-        #     (
-        #         "strategy_hypotheses -> design_candidates"
-        #     )
-        # )
 
         return "design_candidates"
 
@@ -3833,11 +3297,39 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
             )
 
-            # state.execution_trace.append(
-            #     "critique -> revise (loop protection)"
-            # )
-
             return "revise"
+
+        behavioral_issues = (
+            evaluate_behavioral_coherence(
+                state
+            )
+        )
+
+        if behavioral_issues:
+
+            state.reasoning_notes.extend(
+                [
+                    (
+                        "Behavioral validation: "
+                        + issue
+                    )
+                    for issue in behavioral_issues
+                ]
+            )
+
+            if (
+                state.revision_iteration < 2
+            ):
+
+                state.reasoning_notes.append(
+                    (
+                        "Behavioral coherence "
+                        "validation failed. "
+                        "Regenerating candidates."
+                    )
+                )
+
+                return "design_candidates"
 
         if (decision and decision.recommend_revision):
 
@@ -3848,11 +3340,6 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
                 )
             )
 
-            # state.execution_trace.append(
-            #     (
-            #         "critique -> strategy_hypotheses"
-            #     )
-            # )
 
             return "strategy_hypotheses"
 
@@ -3863,11 +3350,6 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
             )
         )
 
-        # state.execution_trace.append(
-        #     (
-        #         "critique -> reflection"
-        #     )
-        # )
 
         return "reflection"
 
@@ -3875,7 +3357,7 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
         state: WebsiteAgentState,
     ) -> str:
         if not state.reflection_report:
-            return "debate"
+            return "simulation"
 
         reflection_conf = artifact_confidence(
             state,
@@ -3883,11 +3365,12 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
             fallback=0.55,
         )
 
-        # Always do a second pass after the first design iteration for deeper exploration
+        # Fixed exploration-depth policy: always take a second design pass
+        # after the first iteration, regardless of what reflection found.
         if state.revision_iteration == 1:
             add_reasoning_note(
                 state,
-                "First-pass reflection complete. Returning to design generation for a second refinement iteration.",
+                "Fixed exploration-depth policy: taking a second design pass after the first iteration.",
             )
             return "design_candidates"
 
@@ -3898,72 +3381,46 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
         ):
             add_reasoning_note(
                 state,
-                "Reflection requested broader exploration with sufficient confidence. Returning to candidate generation.",
+                "Candidates remain barely differentiated after critique. Returning to candidate generation.",
             )
             return "design_candidates"
 
+        # Previously a separate debate node/router sat here; its only real
+        # effects were this skip-simulation shortcut and a scoring bonus,
+        # both derivable directly from critique scores without a dedicated
+        # LLM call (see the node-by-node audit -- debate's comparative
+        # reasoning never reached the final generation prompt anyway).
+        critique_scores = sorted(
+            (average_critique_score(r) for r in state.critique_reports),
+            reverse=True,
+        )
+        top_score = critique_scores[0] if critique_scores else 0.0
+        runner_up = critique_scores[1] if len(critique_scores) > 1 else 0.0
         if (
-            reflection_conf < 0.5
-            and external_planner_unhealthy(
-                planner
-            )
-        ):
-            add_reasoning_note(
-                state,
-                "Reflection confidence is weak and planner health is poor. Skipping debate and moving directly to simulation.",
-            )
-            return "simulation"
-
-        return "debate"
-
-    def debate_router(
-        state: WebsiteAgentState,
-    ) -> str:
-        if not state.debate_outcome:
-            return "simulation"
-
-        if (
-            state.debate_outcome.confidence >= 0.8
+            top_score >= 8.0
+            and (top_score - runner_up) >= 1.5
             and state.uncertainty_score <= 0.28
         ):
             add_reasoning_note(
                 state,
-                "Debate produced a strong winner under low uncertainty. Skipping simulation and moving to revision.",
+                "Critique produced a strong, clearly-separated winner under low uncertainty. Skipping simulation and moving to revision.",
             )
             set_finalization_decision(
                 state,
-                authority="debate_router",
-                reason="Debate produced a strong winner under low uncertainty, so the system is finalizing without additional simulation.",
+                authority="reflection_router",
+                reason="Critique produced a strong winner under low uncertainty, so the system is finalizing without additional simulation.",
                 supporting_signals=[
-                    f"debate_confidence={round(state.debate_outcome.confidence, 2)}",
-                    f"winning_candidate={state.debate_outcome.winning_candidate_id}",
+                    f"top_critique_score={round(top_score, 2)}",
                     f"uncertainty={round(state.uncertainty_score, 2)}",
                 ],
             )
             return "revise"
-
-        if (
-            artifact_used_fallback(
-                state,
-                "debate_outcome",
-            )
-            and state.revision_iteration >= 1
-        ):
-            add_reasoning_note(
-                state,
-                "Debate relied on fallback reasoning after prior exploration. Running simulation before finalization.",
-            )
 
         return "simulation"
 
     graph = StateGraph(
         WebsiteAgentState
     )
-    graph.add_node(
-        "debate",
-        debate_node,
-    )
-
     graph.add_node(
         "simulation",
         simulation_node,
@@ -4078,11 +3535,6 @@ def build_agent_graph(planner: ModelJsonPlanner) -> Any:
         reflection_router,
     )
 
-    graph.add_edge(
-        "debate",
-        "simulation",
-    )
-
     graph.add_conditional_edges(
         "simulation",
         simulation_router,
@@ -4136,11 +3588,6 @@ def _state_cycle_signature(state: WebsiteAgentState) -> tuple:
         if state.simulation_report
         else None
     )
-    debate_conf = (
-        state.debate_outcome.confidence
-        if state.debate_outcome
-        else None
-    )
     expand = (
         state.reflection_report.should_expand_exploration
         if state.reflection_report
@@ -4154,7 +3601,6 @@ def _state_cycle_signature(state: WebsiteAgentState) -> tuple:
         vertical,
         state.revision_iteration,
         sim_score,
-        debate_conf,
         expand,
         cand_count,
         critique_count,
@@ -4412,6 +3858,15 @@ def build_business_profile_prompt(state: WebsiteAgentState) -> str:
         e.g. "restaurant", "clinic", "ecommerce_store", "photography_studio", "saas_product",
         "law_firm", "gym", "real_estate_agency". Only use "unknown" if the input truly gives
         no signal of what kind of business this is.
+
+        risk_level: "regulated" if getting this wrong could cause real legal, financial,
+        health, or safety harm to a customer -- medical/dental/health services, legal
+        services, financial/investment/insurance advice, pharmacies, childcare/eldercare,
+        mental health/counseling, or anything requiring a license to practice. Otherwise
+        "standard" (restaurants, retail, salons, tutoring, repair services, photography,
+        consulting that isn't licensed financial/legal advice, etc.). When in doubt between
+        the two, prefer "regulated" -- the cost of extra caution is lower than the cost of
+        an unregulated-sounding claim on a business that actually needed it.
         Allowed risk levels: ["standard", "regulated"].
 
         Business input:
@@ -4451,7 +3906,7 @@ def compact_requirements_context(state: WebsiteAgentState) -> dict[str, Any]:
         return {}
     requirements = state.requirements_spec
     return {
-        "pages": [page.value for page in requirements.required_pages[:6]],
+        "pages": list(requirements.required_pages[:6]),
         "workflows": [workflow.value for workflow in requirements.required_workflows[:4]],
         "trust": requirements.trust_requirements[:5],
         "conversion": requirements.conversion_priorities[:5],
@@ -4580,7 +4035,7 @@ def build_requirements_prompt(
     tool_context: dict[str, Any] | None = None,
 ) -> str:
     assert state.business_profile is not None
-    rulebook = VERTICAL_RULEBOOKS.get(state.business_profile.vertical, {})
+    compliance_guardrails = regulated_compliance_guardrails(state)
     tool_context = tool_context or {}
     return dedent(
         f"""
@@ -4597,26 +4052,19 @@ def build_requirements_prompt(
         Business snapshot tool:
         {tool_context.get("business_snapshot", {})}
 
-        Vertical rulebook guidance:
-        {rulebook}
+        Behavioral guidance (trust/urgency/conversion needs for this kind of business):
+        {tool_context.get("behavioral_guidance", [])}
+
+        {"Compliance guardrails (regulated business) -- must appear in compliance_requirements: " + str(compliance_guardrails) if compliance_guardrails else ""}
 
         Asset evidence tool:
         {tool_context.get("asset_evidence", {})}
 
-        # Memory guidance tool:
-        # {tool_context.get("memory_guidance", {})}
-
-        # Process health tool:
-        # {tool_context.get("process_health", {})}
-
         Requirements:
-        - required_pages: choose only from this fixed set of page roles —
-          "home", "menu", "order", "reservations", "services", "booking",
-          "about", "contact", "portfolio", "pricing". These are structural
-          roles, not literal page names — map creative page ideas onto the
-          closest role (e.g. a product catalog / cart / checkout flow all
-          map onto "order"; a gallery or case-study page maps onto
-          "portfolio"; a plans/packages page maps onto "pricing").
+        - required_pages: short lowercase snake_case labels for the actual content areas/pages
+          this specific business needs — do not force it into a fixed list. Use whatever labels
+          genuinely fit, e.g. "home", "gallery", "class_schedule", "faq", "case_studies",
+          "team", "pricing". Name what the business actually needs, not a generic template.
         - required_workflows: choose only from "order", "booking", "lead" —
           these are the only 3 transaction shapes the backend supports.
           Map any purchase/checkout/product flow onto "order", any
@@ -4624,25 +4072,31 @@ def build_requirements_prompt(
           inquiry/contact/quote flow onto "lead".
         - include trust requirements and conversion priorities
         - only add missing_information when truly needed
+        - IMPORTANT: this business gets a live, owner-editable catalog/menu
+          dashboard where the owner adds, edits, and prices every item
+          themselves at any time AFTER the site is generated — never before.
+          That means specific item names, menu/service contents, prices,
+          package/ticket pricing, and stock quantities are NEVER missing
+          information and NEVER a clarification question, no matter how
+          unspecified they are in the business description — the generated
+          site always renders whatever the owner has added live, starting
+          from an empty catalog if they haven't added anything yet.
         - before finalizing, actively ask yourself: "if I were building the
           real backend/admin system for this specific business right now,
-          what concrete operational facts do I still not know?" Businesses
-          almost always have unstated specifics like: capacity/quantities
-          (e.g. seats per room, table count, units in stock), a priced list
-          of what they actually sell (menu items and prices, service price
-          list, ticket/package prices), or physical layout (number of rooms/
-          halls/stations, floor plan). If the business description doesn't
-          already give you these for THIS vertical, that is exactly the kind
-          of missing_information / clarification_question to surface — do
-          not let a generic-sounding business description convince you
-          nothing operational is missing.
+          what concrete STRUCTURAL fact do I still not know?" — things that
+          change which pages/workflows/UI need to exist at all (e.g. does
+          this venue take walk-ins or appointments only, is there one
+          location or several, does checkout need delivery vs pickup
+          options). This is distinct from catalog CONTENT (the items
+          themselves and their prices), which is always out of scope per
+          the rule above.
         Generate clarification_questions only when:
         - the answer materially affects workflows
         - business logic changes
         - trust/compliance changes
         - operational behavior changes
-        - a concrete operational fact (capacity, pricing, layout, inventory)
-          needed to build the real backend is missing
+        - a concrete STRUCTURAL fact (not item/price/menu content) needed to
+          build the real backend is missing
 
         Avoid aesthetic-only questions.
         - if uncertainty is high:
@@ -4693,17 +4147,14 @@ def build_strategy_prompt(
         Workflow constraints tool:
         {tool_context.get("workflow_constraints", {})}
 
-        Market research tool:
-        {tool_context.get("market_research", {})}
-
         Asset evidence tool:
         {tool_context.get("asset_evidence", {})}
 
-        # Memory guidance tool:
-        # {tool_context.get("memory_guidance", {})}
-
-        # Process health tool:
-        # {tool_context.get("process_health", {})}
+        You have two optional tools available: web_search(query) for real competitor/market
+        information, and read_page(url) to read a specific real page (a competitor's site, or
+        this business's own existing website if one was given). Use them only if real external
+        data would sharpen the strategies -- if the business context above is already enough,
+        skip them and go straight to the JSON output.
 
        Requirements:
 
@@ -4768,10 +4219,6 @@ def build_design_candidates_prompt(
         is not None
     )
 
-    rulebook = VERTICAL_RULEBOOKS.get(
-        state.business_profile.vertical
-    )
-
     tool_context = tool_context or {}
 
     return dedent(
@@ -4785,11 +4232,11 @@ def build_design_candidates_prompt(
         Business snapshot tool:
         {tool_context.get("business_snapshot", {})}
 
+        Behavioral guidance (trust/urgency/conversion needs, preferred sections for this kind of business):
+        {tool_context.get("behavioral_guidance", [])}
+
         Workflow constraints tool:
         {tool_context.get("workflow_constraints", {})}
-
-        # Strategy landscape tool:
-        # {tool_context.get("strategy_landscape", {})}
 
         Market research tool:
         {tool_context.get("market_research", {})}
@@ -4803,17 +4250,8 @@ def build_design_candidates_prompt(
         Memory guidance tool:
         {tool_context.get("memory_guidance", {})}
 
-        # Previous critique history:
-        # {compact_history(state.critique_history)}
-
         Asset evidence tool:
         {tool_context.get("asset_evidence", {})}
-
-        # # Process health tool:
-        # # {tool_context.get("process_health", {})}
-
-        Rulebook:
-        {rulebook}
 
         Requirements:
 
@@ -4966,7 +4404,7 @@ def build_critique_prompt(
 ) -> str:
     assert state.business_profile is not None
     assert state.requirements_spec is not None
-    rulebook = VERTICAL_RULEBOOKS.get(state.business_profile.vertical, {})
+    compliance_guardrails = regulated_compliance_guardrails(state)
     tool_context = tool_context or {}
     return dedent(
         f"""
@@ -4980,11 +4418,13 @@ def build_critique_prompt(
         Business snapshot tool:
         {tool_context.get("business_snapshot", {})}
 
+        Behavioral guidance (trust/urgency/conversion needs, things to avoid for this kind of business):
+        {tool_context.get("behavioral_guidance", [])}
+
+        {"Compliance guardrails (regulated business) -- flag as a weakness if violated: " + str(compliance_guardrails) if compliance_guardrails else ""}
+
         Workflow constraints tool:
         {tool_context.get("workflow_constraints", {})}
-
-        # Candidate landscape tool:
-        # {tool_context.get("candidate_landscape", {})}
 
         Market research tool:
         {tool_context.get("market_research", {})}
@@ -4995,16 +4435,8 @@ def build_critique_prompt(
         Design quality tool:
         {tool_context.get("design_quality", {})}
 
-        # Memory guidance tool:
-        # {tool_context.get("memory_guidance", {})}
-
         Asset evidence tool:
         {tool_context.get("asset_evidence", {})}
-
-        # Process health tool:
-        # {tool_context.get("process_health", {})}
-        Vertical rulebook:
-        {rulebook}
 
         Requirements:
         - critique every candidate comparatively, not independently
@@ -5146,12 +4578,6 @@ def build_revision_prompt(
         Critique landscape tool:
         {tool_context.get("critique_landscape", {})}
 
-        Market research tool:
-        {tool_context.get("market_research", {})}
-
-        Page reader tool:
-        {tool_context.get("page_reader", {})}
-
         Design quality tool:
         {tool_context.get("design_quality", {})}
 
@@ -5172,6 +4598,11 @@ def build_revision_prompt(
 
         Process health tool:
         {tool_context.get("process_health", {})}
+
+        You have two optional tools available: web_search(query) for real competitor/market
+        information, and read_page(url) to read a specific real page (a competitor's site, or
+        this business's own existing website if one was given). Use them only if real external
+        data would sharpen the final brief/rationale -- otherwise go straight to the JSON output.
 
         Requirements:
 
@@ -5267,142 +4698,6 @@ def build_revision_prompt(
     ).strip()
 
 
-def build_reflection_prompt(
-    state: WebsiteAgentState,
-    tool_context: dict[str, Any] | None = None,
-) -> str:
-    tool_context = tool_context or {}
-    return dedent(
-        f"""
-        You are the Reflection Agent
-        for an autonomous AI
-        planning system.
-
-        Analyze the reasoning quality
-        of the planning process itself.
-
-        Generate a ReflectionReport
-        JSON object only.
-
-        Strategy landscape tool:
-        {tool_context.get("strategy_landscape", {})}
-
-        # Candidate landscape tool:
-        # {tool_context.get("candidate_landscape", {})}
-
-        # Critique landscape tool:
-        # {tool_context.get("critique_landscape", {})}
-
-        Process health tool:
-        {tool_context.get("process_health", {})}
-
-        Candidate ids:
-        {[
-            c.candidate_id
-            for c in state.design_candidates
-        ]}
-
-        Critique summaries:
-        {[
-            {
-                "candidate": r.candidate_id,
-                "strengths": r.strengths[:1],
-                "weaknesses": r.weaknesses[:1]
-            }
-            for r in state.critique_reports
-        ]}
-
-        # Reasoning notes:
-        # {compact_reasoning_notes(state)}
-
-        Requirements:
-
-        - evaluate exploration quality
-        - detect repetitive reasoning
-        - detect weak differentiation
-        - recommend improvements
-        - return concise output
-
-        Rules:
-        - every string max 12 words
-        - concise phrases only
-        - no detailed explanations
-
-        If planning quality is weak:
-        set should_expand_exploration=true
-        """
-    ).strip()
-
-
-def build_debate_prompt(
-    state: WebsiteAgentState,
-    tool_context: dict[str, Any] | None = None,
-) -> str:
-    tool_context = tool_context or {}
-    return dedent(
-        f"""
-        You are the Debate Agent
-        for an autonomous AI
-        planning system.
-
-        Generate a DebateOutcome
-        JSON object only.
-
-        Business snapshot tool:
-        {tool_context.get("business_snapshot", {})}
-
-        Strategy landscape tool:
-        {tool_context.get("strategy_landscape", {})}
-
-        # Candidate landscape tool:
-        # {tool_context.get("candidate_landscape", {})}
-
-        # Critique landscape tool:
-        # {tool_context.get("critique_landscape", {})}
-
-        Market research tool:
-        {tool_context.get("market_research", {})}
-
-        Design quality tool:
-        {tool_context.get("design_quality", {})}
-
-        # Memory guidance tool:
-        # {tool_context.get("memory_guidance", {})}
-
-        # Process health tool:
-        # {tool_context.get("process_health", {})}
-
-        Reflection report:
-        {state.reflection_report.model_dump() if state.reflection_report else None}
-
-        Requirements:
-
-        - compare candidates directly
-        - identify winner and loser
-        - explain key strategic difference
-        - explain losing weakness
-        - recommend one synthesis improvement
-        - return concise output
-
-        Rules:
-        - every string max 12 words
-        - concise phrases only
-        - no detailed explanations
-
-        Required schema:
-
-        {{
-        "winner": "string",
-        "loser": "string",
-        "dominance_reason": "string",
-        "loser_failure_reason": "string",
-        "synthesis_recommendation": "string",
-        "decision_confidence": 0.0
-        }}
-        """
-    ).strip()
-
-
 def build_simulation_prompt(
     state: WebsiteAgentState,
     tool_context: dict[str, Any] | None = None,
@@ -5420,23 +4715,11 @@ def build_simulation_prompt(
         Business snapshot tool:
         {tool_context.get("business_snapshot", {})}
 
-        # Candidate landscape tool:
-        # {tool_context.get("candidate_landscape", {})}
-
-        # Critique landscape tool:
-        # {tool_context.get("critique_landscape", {})}
-
-        Page reader tool:
-        {tool_context.get("page_reader", {})}
+        Candidate landscape tool (the actual page/section plan you must walk through):
+        {tool_context.get("candidate_landscape", {})}
 
         Design quality tool:
         {tool_context.get("design_quality", {})}
-
-        # Process health tool:
-        # {tool_context.get("process_health", {})}
-
-        Debate outcome:
-        {state.debate_outcome.model_dump() if state.debate_outcome else None}
 
         Top critique weaknesses:
         {[
@@ -5446,31 +4729,69 @@ def build_simulation_prompt(
 
         Requirements:
 
-        - simulate realistic user behavior
-        - identify confusion points
-        - identify trust issues
-        - identify workflow friction
-        - recommend improvements
+        - simulate exactly 2 distinct personas walking through the primary
+          workflow step by step, using ONLY the pages/sections in the
+          candidate landscape above -- do not assume a step exists if no
+          section covers it
+        - for each persona, flag a friction point if any step they need
+          (seeing availability, picking a specific option, confirming a
+          limited-quantity choice) has no corresponding section in the plan
+        - if this business involves limited/countable capacity (seats,
+          slots, appointment times, stock), flag it as a friction point if
+          the plan never addresses what a visitor sees once that capacity
+          runs out
+        - note confusion points and trust observations along that same
+          walkthrough
+        - recommended improvements must be concrete plan changes (which
+          section to add, move, or merge), not vague adjectives
+        - overall_realism_score and each persona's realism_score are your
+          honest 1-10 assessment of how well this plan would actually work
+          for a real visitor -- vary them across candidates/runs, don't
+          default to a safe middle number
         - return concise output
 
         Rules:
         - every string max 12 words
-        - max 3 issues
-        - max 3 improvements
+        - max 3 friction_points, trust_observations, confusion_points, and
+          conversion_barriers per persona
+        - max 3 systemic_issues and 3 recommended_improvements overall
         - concise phrases only
         - no detailed explanations
 
         Required schema:
 
         {{
-        "realism_score": 8,
-        "issues": [
+        "overall_realism_score": 8,
+        "simulations": [
+            {{
+                "persona": "first_time_visitor",
+                "goal": "book an evening showtime for two",
+                "journey_summary": "Scans homepage, picks a showtime, looks for seat selection.",
+                "friction_points": ["No seat map before checkout"],
+                "trust_observations": ["Business hours visible near the top"],
+                "confusion_points": [],
+                "conversion_barriers": ["Price per seat not shown until checkout"],
+                "successful": true,
+                "realism_score": 7
+            }},
+            {{
+                "persona": "returning_customer",
+                "goal": "rebook the same showtime quickly",
+                "journey_summary": "Goes straight to showtimes, expects a fast repeat booking.",
+                "friction_points": [],
+                "trust_observations": [],
+                "confusion_points": [],
+                "conversion_barriers": [],
+                "successful": true,
+                "realism_score": 8
+            }}
+        ],
+        "systemic_issues": [
             "Weak reservation visibility"
         ],
-        "improvements": [
+        "recommended_improvements": [
             "Move reservation CTA higher"
-        ],
-        "behavior_summary": "Fast ordering flow works well"
+        ]
         }}
         """
     ).strip()
@@ -5630,6 +4951,24 @@ PAGE_ROLE_SECTION_RULES = {
     },
 }
 
+# Genuine legal/safety guardrails, not aesthetic preference -- kept keyed
+# off risk_level (a first-class BusinessProfile field already computed
+# independently of any vertical name) rather than a hardcoded vertical list,
+# so any regulated-risk business gets these regardless of which of the 8
+# named verticals (or "unknown") it classified as.
+REGULATED_COMPLIANCE_GUARDRAILS = [
+    "diagnosis or treatment guarantees",
+    "definitive medical, legal, or financial claims presented as certain outcomes",
+    "hidden or unclear contact/consultation details",
+]
+
+
+def regulated_compliance_guardrails(state: WebsiteAgentState) -> list[str]:
+    if not state.business_profile or state.business_profile.risk_level != RiskLevel.REGULATED:
+        return []
+    return list(REGULATED_COMPLIANCE_GUARDRAILS)
+
+
 def normalize_requirements_payload(
     payload: dict[str, Any],
     state: WebsiteAgentState,
@@ -5681,15 +5020,6 @@ def normalize_requirements_payload(
             )
         )
 
-    rulebook = (
-        VERTICAL_RULEBOOKS.get(
-            state.business_profile.vertical,
-            {},
-        )
-        if state.business_profile
-        else {}
-    )
-
     behavioral_requirements = (
         derive_behavioral_requirements(
             state.behavioral_contexts
@@ -5698,9 +5028,9 @@ def normalize_requirements_payload(
 
 
     MINIMUM_REQUIRED_PAGES = [
-        PageType.HOME,
-        PageType.SERVICES,
-        PageType.CONTACT,
+        "home",
+        "services",
+        "contact",
     ]
 
     MINIMUM_REQUIRED_WORKFLOWS = [
@@ -5709,9 +5039,6 @@ def normalize_requirements_payload(
 
     required_pages = (
         candidate.get(
-            "required_pages"
-        )
-        or rulebook.get(
             "required_pages"
         )
         or MINIMUM_REQUIRED_PAGES
@@ -5738,9 +5065,6 @@ def normalize_requirements_payload(
         candidate.get(
             "required_workflows"
         )
-        or rulebook.get(
-            "required_workflows"
-        )
         or MINIMUM_REQUIRED_WORKFLOWS
     )
 
@@ -5759,10 +5083,6 @@ def normalize_requirements_payload(
                         candidate.get(
                             "trust_requirements"
                         )
-                        or rulebook.get(
-                            "must_prioritize",
-                            [],
-                        )
                     )
                     +
                     normalize_string_list(
@@ -5780,7 +5100,7 @@ def normalize_requirements_payload(
                 candidate.get(
                     "compliance_requirements"
                 )
-                or []
+                or regulated_compliance_guardrails(state)
             ),
 
         "conversion_priorities":
@@ -5789,10 +5109,6 @@ def normalize_requirements_payload(
                     normalize_string_list(
                         candidate.get(
                             "conversion_priorities"
-                        )
-                        or rulebook.get(
-                            "must_prioritize",
-                            [],
                         )
                     )
                     +
@@ -5828,79 +5144,13 @@ def normalize_requirements_payload(
                 candidate.get(
                     "avoid_patterns"
                 )
-                or rulebook.get(
-                    "avoid",
-                    [],
+                or (
+                    state.behavioral_contexts[0].conversion_risks
+                    if state.behavioral_contexts
+                    else []
                 )
             ),
     }
-
-
-def apply_pricing_clarification_guard(
-    state: WebsiteAgentState,
-    requirements_spec: RequirementsSpec,
-) -> None:
-    """
-    Force a pricing clarification question when items were extracted from
-    uploaded assets but no prices were detected. The requirements LLM call
-    is asked to notice gaps like this on its own, but that's not reliable
-    run-to-run, so this backstops it deterministically instead of depending
-    on the model catching it every time.
-    """
-    services: list[str] = []
-    prices: list[Any] = []
-    for extraction in state.asset_extractions or []:
-        info = extraction.extracted_business_info
-        services.extend(info.services_or_items)
-        prices.extend(info.prices)
-
-    if not services or prices:
-        return
-
-    question_id = "deterministic_missing_prices"
-
-    if question_id in (state.human_answers or {}):
-        return
-
-    # Only skip if an existing question already names one of the actual
-    # extracted items -- a generic question that merely contains the word
-    # "price" (e.g. "what are your menu items and prices?", which the
-    # requirements LLM produces often) is NOT specific enough to replace this
-    # one, since it never tells the user which items still need pricing.
-    if any(
-        question.question_id == question_id
-        or any(service.lower() in question.question.lower() for service in services[:5])
-        for question in requirements_spec.clarification_questions
-    ):
-        return
-
-    requirements_spec.missing_information.append(
-        "Prices for extracted menu/service items"
-    )
-    # Insert at the front and re-cap to 3: unanswered_clarification_questions
-    # only surfaces the first 3 unanswered questions, and the requirements
-    # LLM's own output is already capped at 3 before this guard runs -- an
-    # append here would be silently squeezed out every time the model
-    # already produced 3 questions of its own. This one is more specific and
-    # actionable, so it must win the slot.
-    requirements_spec.clarification_questions.insert(
-        0,
-        ClarificationQuestion(
-            question_id=question_id,
-            question=(
-                "What are the prices for these items detected in your "
-                f"uploaded assets: {', '.join(services[:5])}?"
-            ),
-            options=[],
-            reasoning=(
-                "Menu/service items were extracted from uploaded assets but "
-                "no prices were detected, and pricing directly affects "
-                "ordering/checkout workflows and trust content."
-            ),
-            priority=1,
-        )
-    )
-    requirements_spec.clarification_questions = requirements_spec.clarification_questions[:3]
 
 
 def normalize_string_list(values: Any) -> list[str]:
@@ -6113,10 +5363,11 @@ def build_simulation_clarification_questions(
 
     # Generic catch-all: the 3 categories above were seeded from early
     # clinic/repair-service test cases and don't cover every business type
-    # (e.g. a theatre's seat count, a venue's layout, a menu's prices).
-    # IMPORTANT: this must only surface findings that are missing BUSINESS
-    # FACTS (things only the owner knows: prices, capacity, quantities,
-    # layout) — not the simulation's own critique of the AI's draft quality
+    # (e.g. a theatre's seat count, a venue's layout).
+    # IMPORTANT: this must only surface findings that are missing STRUCTURAL
+    # business facts (capacity, layout) -- never catalog/menu/pricing
+    # content, which the owner manages anytime via the live catalog
+    # dashboard, and never the simulation's own critique of the AI's draft quality
     # ("duplicate sections", "workflow weakly represented", "thin trust
     # proof"). Those are things the revision agent should fix itself; a
     # business owner has no meaningful answer to "duplicate sections reduce
@@ -6136,9 +5387,17 @@ def build_simulation_clarification_questions(
         "not stated", "does not specify", "doesn't specify",
         "missing", "unclear how many", "unknown", "undefined",
         "how many", "how much", "what is the", "what are the",
-        "pricing", "price", "prices", "cost", "capacity",
-        "quantity", "quantities", "inventory", "stock",
-        "menu", "seat", "seats", "seating", "layout",
+        "capacity", "seat", "seats", "seating", "layout",
+    )
+
+    # Catalog/pricing content is owner-editable via the live catalog
+    # dashboard after launch, so simulation friction caused by an empty or
+    # unpriced catalog is never a question for the owner -- regardless of
+    # which generic uncertainty phrase (e.g. "not specified") the finding
+    # happens to use, if it's also about item/price/stock content, skip it.
+    catalog_content_keywords = (
+        "price", "pricing", "cost", "menu", "item", "product",
+        "inventory", "stock", "quantity", "quantities", "catalog",
     )
 
     for finding in raw_findings:
@@ -6146,6 +5405,8 @@ def build_simulation_clarification_questions(
             break
         lowered = finding.lower()
         if any(keyword in lowered for keyword in covered_keywords):
+            continue
+        if any(keyword in lowered for keyword in catalog_content_keywords):
             continue
         if not any(signal in lowered for signal in factual_gap_signals):
             continue
@@ -6568,7 +5829,7 @@ def normalize_design_candidate(
             for page_type in (
                 state.requirements_spec.required_pages
                 if state.requirements_spec
-                else [PageType.HOME]
+                else ["home"]
             )
         ]
 
@@ -6878,10 +6139,10 @@ def normalize_section_spec(section: dict[str, Any], index: int, page_type: str, 
 
 
 def normalize_visual_system(value: dict[str, Any], state: WebsiteAgentState | None = None, mode: str = "conversion") -> dict[str, Any]:
-    rulebook = get_rulebook_for_state(state)
-    default_tone = first_rulebook_value(rulebook.get("preferred_tones"), "practical")
-    default_density = enumish_value(rulebook.get("preferred_density"), "medium")
-    default_media_bias = enumish_value(rulebook.get("preferred_media_bias"), "copy_first")
+    behavioral_defaults = default_visual_system_from_behavioral(state)
+    default_tone = behavioral_defaults["tone"]
+    default_density = behavioral_defaults["density"]
+    default_media_bias = behavioral_defaults["media_bias"]
     if mode == "trust_browsing":
         if default_density == "high":
             default_density = "medium"
@@ -6933,8 +6194,14 @@ def infer_design_tokens(
         if state
         else {}
     ) or {}
-    vertical = infer_vertical_from_business_input(
-        state
+    # Prefer the already-classified vertical (state.business_profile.vertical
+    # reflects the LLM's own classification, already run by this stage) --
+    # only re-derive from raw keywords if that isn't available at all,
+    # instead of always re-guessing and potentially disagreeing with it.
+    vertical = (
+        state.business_profile.vertical
+        if state and state.business_profile
+        else infer_vertical_from_business_input(state)
     )
     palettes = {
         "restaurant": ("#9f2f22", "#e4a12f", "#fff8ef", "Inter"),
@@ -7071,7 +6338,7 @@ def build_fallback_design_spec(state: WebsiteAgentState) -> dict[str, Any]:
         rationale.extend(critique.strengths[:2])
         rationale.extend(critique.revision_instructions[:2])
     if not rationale:
-        rationale = ["Selected the strongest candidate using rulebook-guided defaults."]
+        rationale = ["Selected the strongest candidate using behavioral-archetype-guided defaults."]
     return {
         "brief": build_fallback_brief(state, candidate, critique),
         "chosen_candidate_id": candidate_attr(candidate,"candidate_id","unknown",),
@@ -7488,20 +6755,42 @@ def dedupe_strings(values: list[str]) -> list[str]:
     return output
 
 
-def get_rulebook_for_state(state: WebsiteAgentState | None) -> dict[str, Any]:
-    if state is None or state.business_profile is None:
-        return {}
-    return VERTICAL_RULEBOOKS.get(state.business_profile.vertical, {})
+def default_visual_system_from_behavioral(state: WebsiteAgentState | None) -> dict[str, str]:
+    """Derives tone/density/media_bias defaults from this business's
+    behavioral archetype(s) instead of a hardcoded per-vertical lookup --
+    covers every business, since behavioral_contexts always resolves to at
+    least one archetype via infer_behavioral_archetypes()'s keyword
+    fallback, unlike a vertical-name rulebook that only covered 3 verticals."""
+    contexts = state.behavioral_contexts if state else []
+    if not contexts:
+        return {"tone": "practical", "density": "medium", "media_bias": "copy_first"}
+    primary = contexts[0]
+    if primary.visual_dependency == "high":
+        media_bias = "image_heavy"
+    elif primary.trust_requirement == "high":
+        media_bias = "trust_first"
+    else:
+        media_bias = "copy_first"
+
+    if primary.trust_requirement == "high" or primary.urgency_level == "high":
+        density = "medium"
+    else:
+        density = "high" if primary.visual_dependency == "high" else "medium"
+
+    if primary.trust_requirement == "high":
+        tone = "trustworthy"
+    elif primary.urgency_level == "high":
+        tone = "practical"
+    elif primary.visual_dependency == "high":
+        tone = "energetic"
+    else:
+        tone = "practical"
+
+    return {"tone": tone, "density": density, "media_bias": media_bias}
 
 
 def enumish_value(value: Any, fallback: str) -> str:
     return getattr(value, "value", value) or fallback
-
-
-def first_rulebook_value(values: Any, fallback: str) -> str:
-    if isinstance(values, list) and values:
-        return enumish_value(values[0], fallback)
-    return fallback
 
 
 def infer_primary_action_kind(state: WebsiteAgentState | None) -> str:
@@ -7787,22 +7076,24 @@ def infer_default_sections_for_page(page_type: str, state: WebsiteAgentState, pa
     ]
 
 
+def _primary_behavioral_preferred_sections(state: WebsiteAgentState) -> list[str]:
+    contexts = state.behavioral_contexts if state else []
+    return list(contexts[0].preferred_sections) if contexts else []
+
+
 def infer_home_hero_type(state: WebsiteAgentState) -> str:
-    rulebook = get_rulebook_for_state(state)
-    required_sections = {enumish_value(item, "") for item in rulebook.get("required_sections", [])}
-    if "hero_offer_banner" in required_sections:
+    # Behavioral archetype preferred_sections cover every business (via the
+    # keyword fallback in infer_behavioral_archetypes), unlike a hardcoded
+    # per-vertical rulebook that only ever named 3 verticals.
+    if "hero_offer_banner" in _primary_behavioral_preferred_sections(state):
         return "hero_offer_banner"
     return "hero_trust_banner"
 
 
 def infer_primary_content_section(state: WebsiteAgentState) -> str:
-    vertical = state.business_profile.vertical if state.business_profile else ""
-    if vertical in {"restaurant", "cafe", "bakery"}:
-        return "menu_showcase"
-    if vertical == "clinic":
-        return "doctor_profiles"
-    if vertical == "repair_service":
-        return "service_cards"
+    for section in _primary_behavioral_preferred_sections(state):
+        if "hero" not in section:
+            return section
     return "feature_grid"
 
 

@@ -882,6 +882,89 @@ def live_tools_enabled() -> bool:
     }
 
 
+def research_tool_schemas() -> list[dict[str, Any]]:
+    """Shared by every caller that gives the model real web_search/read_page
+    tools (agentic_graph.py's strategy/revise nodes, research_agents.py's
+    competitor/SEO agents) so they all expose the identical contract instead
+    of drifting copies."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": (
+                    "Search the web for real, current information relevant to this business "
+                    "(e.g. competitors, local market conditions, typical pricing). Returns a "
+                    "short list of real search results (title, url, snippet)."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "read_page",
+                "description": (
+                    "Fetch and summarize one real web page by URL -- a competitor's site found "
+                    "via web_search, or this business's own existing website if one was given. "
+                    "Returns its title and a short text summary."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {"url": {"type": "string"}},
+                    "required": ["url"],
+                },
+            },
+        },
+    ]
+
+
+def build_research_tool_executor(max_calls: int = 4) -> tuple[Any, dict[str, int]]:
+    """Returns (executor, call_state). call_state["calls"] is updated live,
+    so a caller can check afterward whether any tool was actually used --
+    e.g. to decide whether it's honest to label the model's output as
+    grounded in real research or not.
+
+    Real network calls (unlike the revision/backend-provisioning tool
+    executors, which only mutate local state), so this needs its own call
+    budget -- a model that decides to search repeatedly shouldn't be able to
+    fire off unbounded real HTTP requests in one generation."""
+    call_state = {"calls": 0}
+
+    def executor(name: str, args: dict[str, Any]) -> dict[str, Any]:
+        if not live_tools_enabled():
+            return {"error": "live web tools are disabled"}
+        if call_state["calls"] >= max_calls:
+            return {"error": "research call limit reached for this run"}
+        call_state["calls"] += 1
+
+        if name == "web_search":
+            query = str(args.get("query", "")).strip()
+            if not query:
+                return {"error": "query is required"}
+            try:
+                return {"results": search_duckduckgo(query)[:4]}
+            except Exception as exc:
+                return {"error": f"search failed: {exc}"}
+
+        if name == "read_page":
+            url = str(args.get("url", "")).strip()
+            if not url or not is_fetchable_url(url):
+                return {"error": "url is missing or not fetchable"}
+            try:
+                return fetch_page_summary(url)
+            except Exception as exc:
+                return {"error": f"fetch failed: {exc}"}
+
+        return {"error": f"unknown tool {name}"}
+
+    return executor, call_state
+
+
 def enum_value(
     value: Any,
     fallback: str,

@@ -12,6 +12,30 @@ from agentic_external_tools import (
 )
 
 
+def behavioral_guidance_tool(
+    state: WebsiteAgentState,
+) -> list[dict[str, Any]]:
+    """Behavior-driven guidance (trust need, urgency, conversion latency,
+    preferred sections, things to avoid) for every archetype this business
+    matched -- covers any business, not just a hardcoded list of verticals,
+    since infer_behavioral_archetypes() always resolves to at least one
+    archetype via its keyword fallback."""
+    return [
+        {
+            "archetype": context.key,
+            "trust_requirement": context.trust_requirement,
+            "urgency_level": context.urgency_level,
+            "conversion_latency": context.conversion_latency,
+            "visual_dependency": context.visual_dependency,
+            "preferred_cta_style": list(context.preferred_cta_style[:3]),
+            "trust_signals": list(context.trust_signals[:4]),
+            "preferred_sections": list(context.preferred_sections[:4]),
+            "avoid": list(context.conversion_risks[:4]),
+        }
+        for context in (state.behavioral_contexts or [])
+    ]
+
+
 def business_snapshot_tool(
     state: WebsiteAgentState,
 ) -> dict[str, Any]:
@@ -46,10 +70,7 @@ def workflow_constraints_tool(
         return {}
     requirements = state.requirements_spec
     return {
-        "pages": [
-            page.value
-            for page in requirements.required_pages[:6]
-        ],
+        "pages": list(requirements.required_pages[:6]),
         "workflows": [
             workflow.value
             for workflow in requirements.required_workflows[:4]
@@ -234,6 +255,7 @@ def build_stage_tool_context(
     stage_map = {
         "requirements": [
             ("business_snapshot", business_snapshot_tool),
+            ("behavioral_guidance", behavioral_guidance_tool),
             ("asset_evidence", asset_evidence_tool),
             ("memory_guidance", memory_guidance_tool),
             ("process_health", process_health_tool),
@@ -241,13 +263,13 @@ def build_stage_tool_context(
         "strategy_hypotheses": [
             ("business_snapshot", business_snapshot_tool),
             ("workflow_constraints", workflow_constraints_tool),
-            ("market_research", market_research_tool),
             ("asset_evidence", asset_evidence_tool),
             ("memory_guidance", memory_guidance_tool),
             ("process_health", process_health_tool),
         ],
         "design_candidates": [
             ("business_snapshot", business_snapshot_tool),
+            ("behavioral_guidance", behavioral_guidance_tool),
             ("workflow_constraints", workflow_constraints_tool),
             ("strategy_landscape", strategy_landscape_tool),
             ("market_research", market_research_tool),
@@ -259,6 +281,7 @@ def build_stage_tool_context(
         ],
         "critique": [
             ("business_snapshot", business_snapshot_tool),
+            ("behavioral_guidance", behavioral_guidance_tool),
             ("workflow_constraints", workflow_constraints_tool),
             ("candidate_landscape", candidate_landscape_tool),
             ("market_research", market_research_tool),
@@ -274,26 +297,8 @@ def build_stage_tool_context(
             ("strategy_landscape", strategy_landscape_tool),
             ("candidate_landscape", candidate_landscape_tool),
             ("critique_landscape", critique_landscape_tool),
-            ("market_research", market_research_tool),
-            ("page_reader", page_reader_tool),
             ("memory_guidance", memory_guidance_tool),
             ("asset_evidence", asset_evidence_tool),
-            ("design_quality", design_quality_tool),
-            ("process_health", process_health_tool),
-        ],
-        "reflection": [
-            ("strategy_landscape", strategy_landscape_tool),
-            ("candidate_landscape", candidate_landscape_tool),
-            ("critique_landscape", critique_landscape_tool),
-            ("process_health", process_health_tool),
-        ],
-        "debate": [
-            ("business_snapshot", business_snapshot_tool),
-            ("strategy_landscape", strategy_landscape_tool),
-            ("candidate_landscape", candidate_landscape_tool),
-            ("critique_landscape", critique_landscape_tool),
-            ("market_research", market_research_tool),
-            ("memory_guidance", memory_guidance_tool),
             ("design_quality", design_quality_tool),
             ("process_health", process_health_tool),
         ],
@@ -301,7 +306,6 @@ def build_stage_tool_context(
             ("business_snapshot", business_snapshot_tool),
             ("candidate_landscape", candidate_landscape_tool),
             ("critique_landscape", critique_landscape_tool),
-            ("page_reader", page_reader_tool),
             ("design_quality", design_quality_tool),
             ("process_health", process_health_tool),
         ],

@@ -4,54 +4,6 @@ window.latestSpec = null;
 window.latestDesignSpec = null;
 window.latestRestaurant = null;
 
-const presets = {
-  restaurant: {
-    name: "Bella Napoli",
-    location: "San Francisco",
-    goal: "increase online orders and table reservations",
-    email: "hello@bellanapoli.example",
-    details:
-      "Bella Napoli is a family Italian restaurant in San Francisco. It serves pizza, pasta, desserts, and has a menu for pickup orders. Business hours are 11am to 10pm daily. The owner wants more online orders and table reservations.",
-    target_audience: "Families and young professionals in San Francisco looking for authentic Italian dining",
-    unique_selling_points: "Family recipes passed down 3 generations, wood-fired pizza, gluten-free options",
-    business_hours: "11am-10pm daily",
-    phone_number: "+1 (415) 555-0123",
-    primary_color: "#dc2626",
-    secondary_color: "#1e3a8a",
-    accent_color: "#f59e0b",
-  },
-  clinic: {
-    name: "BrightCare Dental",
-    location: "Austin",
-    goal: "increase appointment bookings",
-    email: "appointments@brightcare.example",
-    details:
-      "BrightCare Dental is a dental clinic in Austin. It offers cleaning, whitening, emergency dental care, implants, and family dentistry. Business hours are Monday to Friday 9am to 6pm. Patients should be able to book appointments online and submit intake information.",
-    target_audience: "Families and professionals in Austin seeking comprehensive dental care",
-    unique_selling_points: "Same-day emergency appointments, modern technology, gentle care approach",
-    business_hours: "Mon-Fri 9am-6pm",
-    phone_number: "+1 (512) 555-0456",
-    primary_color: "#0891b2",
-    secondary_color: "#0e7490",
-    accent_color: "#14b8a6",
-  },
-  service: {
-    name: "Northstar Home Repair",
-    location: "Denver",
-    goal: "capture more qualified leads",
-    email: "jobs@northstar.example",
-    details:
-      "Northstar Home Repair is a local repair service in Denver. It handles plumbing, electrical fixes, HVAC tuneups, and emergency repair requests. Customers need fast quotes, service area information, and a reliable contact workflow.",
-    target_audience: "Homeowners in Denver metro area needing reliable home maintenance",
-    unique_selling_points: "24/7 emergency service, licensed and insured technicians, upfront pricing",
-    business_hours: "24/7 emergency, Mon-Sat 8am-6pm for routine",
-    phone_number: "+1 (303) 555-0789",
-    primary_color: "#f97316",
-    secondary_color: "#ea580c",
-    accent_color: "#fbbf24",
-  },
-};
-
 const featureRegistry = {
   online_ordering: {
     label: "Online ordering",
@@ -364,6 +316,12 @@ let state = {
   graphResumeState: null,
   isGenerating: false,
   resolveClarification: null,
+
+  businessId: null,
+  menuEditorItems: [],
+  owner: null,
+  myBusinesses: [],
+  selectedBusinessId: null,
 };
 
 function getBusinessProfileInput() {
@@ -374,9 +332,6 @@ function getBusinessProfileInput() {
     contact_email: document.querySelector("#businessEmail").value.trim(),
     details: document.querySelector("#businessDetails").value,
     logo: document.querySelector("#businessLogo").files[0] || null,
-    primary_color: document.querySelector("#primaryColor").value,
-    secondary_color: document.querySelector("#secondaryColor").value,
-    accent_color: document.querySelector("#accentColor").value,
     target_audience: document.querySelector("#targetAudience").value.trim(),
     unique_selling_points: document.querySelector("#uniqueSellingPoints").value.trim(),
     business_hours: document.querySelector("#businessHours").value.trim(),
@@ -420,7 +375,7 @@ async function replayGraphEvents(events) {
   if (!events.length) {
     pushTimelineEvent(
       "System",
-      "Running in fallback mode. Uploaded assets are sent to Pollinations for vision extraction.",
+      "Running in fallback mode. Uploaded assets are sent to Grok for vision extraction.",
       "active",
     );
     updateCognitionPanel("fallback_mode", {
@@ -1335,58 +1290,258 @@ function systemProofCopy(spec) {
   return shapeCopy(spec).proof;
 }
 
-function renderAdmin() {
+async function renderAdmin() {
+  // Once a business exists, real submissions (persisted server-side, works
+  // for a standalone /site/{slug} visitor with no parent frame at all) are
+  // the source of truth -- not the old in-memory state.orders/bookings/leads,
+  // which only ever reflected postMessages received in THIS browser tab and
+  // vanished on refresh.
+  if (state.businessId) {
+    let submissions = [];
+    try {
+      const res = await fetch(`/businesses/${state.businessId}/submissions`);
+      const data = await res.json();
+      submissions = Array.isArray(data.submissions) ? data.submissions : [];
+    } catch (_) {
+      submissions = [];
+    }
+    const toRecord = (s) => ({
+      id: s.id,
+      customer: s.customer || "Customer",
+      request: s.summary || "",
+      contact: s.contact || "",
+      time: s.createdAt ? new Date(s.createdAt).toLocaleTimeString() : "",
+      status: s.status || "new",
+    });
+    renderRecordList("#ordersList", submissions.filter((s) => s.type === "order").map(toRecord), "No orders yet. Submit from the generated website.");
+    renderRecordList("#bookingsList", submissions.filter((s) => s.type === "reservation").map(toRecord), "No bookings yet. Submit from the generated website.");
+    renderRecordList("#leadsList", submissions.filter((s) => s.type === "lead").map(toRecord), "No leads yet. Submit from the generated website.");
+    return;
+  }
   renderRecordList("#ordersList", state.orders, "No orders yet. Submit from the generated website.");
   renderRecordList("#bookingsList", state.bookings, "No bookings yet. Submit from the generated website.");
   renderRecordList("#leadsList", state.leads, "No leads yet. Submit from the generated website.");
 }
 
+// Deliberately NOT called from renderAdmin(): that function fires on every
+// order/booking/lead postMessage, and refetching here would blow away any
+// in-progress, unsaved edits in the menu editor. Called once after a
+// generation completes instead (see runProductionPipeline).
+async function renderMenuEditor() {
+  const listEl = document.querySelector("#menuEditorList");
+  const statusEl = document.querySelector("#menuEditorStatus");
+  if (!listEl) return;
+  if (!state.businessId) {
+    listEl.innerHTML = `<p class="empty">Generate a website first to manage its menu/items.</p>`;
+    return;
+  }
+  try {
+    const response = await fetch(`/businesses/${state.businessId}/items`);
+    const data = await response.json();
+    state.menuEditorItems = Array.isArray(data.items) ? data.items : [];
+  } catch (error) {
+    if (statusEl) statusEl.textContent = `Failed to load items: ${error.message}`;
+    return;
+  }
+  paintMenuEditor();
+
+  const addBtn = document.querySelector("#addMenuItemBtn");
+  if (addBtn) {
+    addBtn.onclick = () => {
+      state.menuEditorItems.push({
+        id: crypto.randomUUID(),
+        name: "",
+        category: "",
+        description: "",
+        priceLabel: "",
+        priceSortValue: 0,
+        imageUrl: "",
+      });
+      paintMenuEditor();
+    };
+  }
+
+  const saveBtn = document.querySelector("#saveMenuItemsBtn");
+  if (saveBtn) {
+    saveBtn.onclick = async () => {
+      if (statusEl) statusEl.textContent = "Saving...";
+      try {
+        const result = await postJSON(
+          `/businesses/${state.businessId}/items`,
+          { items: state.menuEditorItems },
+          "PUT",
+        );
+        state.menuEditorItems = Array.isArray(result.items) ? result.items : [];
+        paintMenuEditor();
+        if (statusEl) statusEl.textContent = "Saved. The live site now reflects these changes.";
+      } catch (error) {
+        if (statusEl) statusEl.textContent = `Save failed: ${error.message}`;
+      }
+    };
+  }
+}
+
+function paintMenuEditor() {
+  const listEl = document.querySelector("#menuEditorList");
+  if (!listEl) return;
+  if (!state.menuEditorItems.length) {
+    listEl.innerHTML = `<p class="empty">No items yet. Use "+ Add item" below.</p>`;
+    return;
+  }
+  listEl.innerHTML = state.menuEditorItems
+    .map(
+      (item, index) => `
+        <div class="menu-editor-row" data-index="${index}">
+          <div class="menu-editor-photo">
+            ${
+              item.imageUrl
+                ? `<img class="menu-editor-thumb" src="${escapeHtml(item.imageUrl)}" alt="">`
+                : `<div class="menu-editor-thumb menu-editor-thumb-empty">No photo</div>`
+            }
+            <label class="ghost-button menu-editor-upload-label">
+              ${item.imageUrl ? "Change photo" : "Add photo"}
+              <input type="file" accept="image/jpeg,image/png,image/webp,image/gif" class="menu-editor-photo-input" data-index="${index}" hidden>
+            </label>
+          </div>
+          <div class="menu-editor-fields">
+            <input type="text" class="menu-editor-name" placeholder="Name" value="${escapeHtml(item.name)}">
+            <input type="text" class="menu-editor-category" placeholder="Category" value="${escapeHtml(item.category)}">
+            <input type="text" class="menu-editor-price" placeholder="Price (e.g. $12.00)" value="${escapeHtml(item.priceLabel)}">
+            <input type="text" class="menu-editor-description" placeholder="Description" value="${escapeHtml(item.description)}">
+          </div>
+          <button type="button" class="ghost-button menu-editor-remove" data-index="${index}">Remove</button>
+        </div>
+      `,
+    )
+    .join("");
+
+  listEl.querySelectorAll(".menu-editor-row").forEach((row) => {
+    const index = Number(row.dataset.index);
+    const item = state.menuEditorItems[index];
+    row.querySelector(".menu-editor-name").addEventListener("input", (e) => { item.name = e.target.value; });
+    row.querySelector(".menu-editor-category").addEventListener("input", (e) => { item.category = e.target.value; });
+    row.querySelector(".menu-editor-description").addEventListener("input", (e) => { item.description = e.target.value; });
+    row.querySelector(".menu-editor-price").addEventListener("input", (e) => {
+      item.priceLabel = e.target.value;
+      const parsed = parseFloat(e.target.value.replace(/[^0-9.]/g, ""));
+      item.priceSortValue = Number.isFinite(parsed) ? parsed : 0;
+    });
+  });
+  listEl.querySelectorAll(".menu-editor-photo-input").forEach((input) => {
+    input.addEventListener("change", async (e) => {
+      const index = Number(input.dataset.index);
+      const item = state.menuEditorItems[index];
+      const file = e.target.files && e.target.files[0];
+      if (!file || !item || !state.businessId) return;
+      const statusEl = document.querySelector("#menuEditorStatus");
+      if (statusEl) statusEl.textContent = "Uploading photo...";
+      try {
+        const formData = new FormData();
+        formData.append("file", file);
+        const response = await fetch(`/businesses/${state.businessId}/items/image?item_id=${encodeURIComponent(item.id)}`, {
+          method: "POST",
+          body: formData,
+        });
+        if (!response.ok) {
+          const errBody = await response.json().catch(() => ({}));
+          throw new Error(errBody.detail || `Upload failed (${response.status})`);
+        }
+        const result = await response.json();
+        item.imageUrl = result.imageUrl;
+        paintMenuEditor();
+        if (statusEl) statusEl.textContent = 'Photo uploaded. Click "Save changes" to publish it live.';
+      } catch (error) {
+        if (statusEl) statusEl.textContent = `Photo upload failed: ${error.message}`;
+      }
+    });
+  });
+  listEl.querySelectorAll(".menu-editor-remove").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.menuEditorItems.splice(Number(btn.dataset.index), 1);
+      paintMenuEditor();
+    });
+  });
+}
+
 window.addEventListener("message", function (event) {
   const d = event.data;
-  if (!d || !d.type) return;
-  const now = new Date().toLocaleTimeString();
-  // Unified contract: any generated page (however it's built) reports a
-  // submission as {type, summary, customer, contact} — accepts the older
-  // per-type field names too (order/guests+date/message/email/phone) so
-  // pages built against the previous rigid template still work.
-  const record = {
-    customer: d.customer || d.name || "Customer",
-    request:
-      d.summary ||
-      d.order ||
-      (d.guests || d.date ? `${d.guests || 1} guest(s) on ${d.date || "TBD"}` : "") ||
-      d.message ||
-      d.request ||
-      "",
-    contact: d.contact || d.email || d.phone || "",
-    time: now,
-  };
-  if (d.type === "order") {
-    state.orders.unshift(record);
-    renderAdmin();
-  } else if (d.type === "reservation") {
-    state.bookings.unshift(record);
-    renderAdmin();
-  } else if (d.type === "lead") {
-    state.leads.unshift(record);
-    renderAdmin();
+  if (!d || !["order", "reservation", "lead"].includes(d.type)) return;
+  // postMessage is now only used by legacy/deterministic-fallback pages
+  // (built before the direct-POST-to-/submissions contract existed) --
+  // accepts their older per-type field names too (order/guests+date/
+  // message/email/phone) and forwards to the backend so it gets persisted
+  // the same as everything else, instead of only living in this tab.
+  const summary =
+    d.summary ||
+    d.order ||
+    (d.guests || d.date ? `${d.guests || 1} guest(s) on ${d.date || "TBD"}` : "") ||
+    d.message ||
+    d.request ||
+    "";
+  const customer = d.customer || d.name || "Customer";
+  const contact = d.contact || d.email || d.phone || "";
+
+  if (state.businessId) {
+    postJSON(`/businesses/${state.businessId}/submissions`, { type: d.type, summary, customer, contact })
+      .then(() => renderAdmin())
+      .catch(() => {});
+    return;
   }
+
+  const record = { customer, request: summary, contact, time: new Date().toLocaleTimeString() };
+  if (d.type === "order") state.orders.unshift(record);
+  else if (d.type === "reservation") state.bookings.unshift(record);
+  else if (d.type === "lead") state.leads.unshift(record);
+  renderAdmin();
 });
 
+const SUBMISSION_STATUS_LABELS = {
+  new: "New",
+  in_progress: "In Progress",
+  completed: "Completed",
+  cancelled: "Cancelled",
+};
+
 function renderRecordList(selector, records, emptyText) {
-  document.querySelector(selector).innerHTML = records.length
+  const container = document.querySelector(selector);
+  container.innerHTML = records.length
     ? records
         .map(
           (record) => `
             <article class="record">
-              <strong>${record.customer}</strong>
-              <p>${record.request}</p>
-              <small>${record.contact} · ${record.time}</small>
+              <div class="record-main">
+                <strong>${record.customer}</strong>
+                <p>${record.request}</p>
+                <small>${record.contact} · ${record.time}</small>
+              </div>
+              ${
+                record.id
+                  ? `<select class="record-status status-${record.status || "new"}" data-id="${record.id}">
+                      ${Object.entries(SUBMISSION_STATUS_LABELS)
+                        .map(([value, label]) => `<option value="${value}" ${record.status === value ? "selected" : ""}>${label}</option>`)
+                        .join("")}
+                    </select>`
+                  : ""
+              }
             </article>
           `,
         )
         .join("")
     : `<p class="empty">${emptyText}</p>`;
+
+  container.querySelectorAll(".record-status").forEach((select) => {
+    select.addEventListener("change", async (e) => {
+      const submissionId = select.dataset.id;
+      const newStatus = e.target.value;
+      if (!state.businessId || !submissionId) return;
+      select.className = `record-status status-${newStatus}`;
+      try {
+        await postJSON(`/businesses/${state.businessId}/submissions/${submissionId}`, { status: newStatus }, "PATCH");
+      } catch (error) {
+        select.classList.add("record-status-error");
+      }
+    });
+  });
 }
 
 function renderQa(spec) {
@@ -1601,6 +1756,16 @@ async function requestLiveBuildSpec() {
 
 async function runDemo() {
   if (state.isGenerating) return;
+  if (!state.owner) {
+    window.alert("Please sign up or log in (top left) before creating a business website.");
+    return;
+  }
+  const name = document.querySelector("#businessName")?.value.trim() || "";
+  const details = document.querySelector("#businessDetails")?.value.trim() || "";
+  if (!name || !details) {
+    window.alert("Please fill in at least the business name and raw business details before generating.");
+    return;
+  }
 
   state.isGenerating = true;
 
@@ -1742,7 +1907,7 @@ async function runDemo() {
   }
 }
 
-async function applyAmdPayload(payload, sourceLabel = "Pollinations import") {
+async function applyAmdPayload(payload, sourceLabel = "Grok import") {
   state.assetExtractions = payload.assetExtractions || [];
   state.extractedAssetText = payload.assetSignals || "";
   state.amdInsights = buildAmdInsights(state.assetExtractions);
@@ -1790,23 +1955,217 @@ document.querySelectorAll(".step").forEach((step) => {
   step.addEventListener("click", () => showPanel(step.dataset.target));
 });
 
-document.querySelectorAll("[data-preset]").forEach((button) => {
-  button.addEventListener("click", () => {
-    const preset = presets[button.dataset.preset];
-    document.querySelector("#businessName").value = preset.name;
-    document.querySelector("#businessLocation").value = preset.location;
-    document.querySelector("#businessGoal").value = preset.goal;
-    document.querySelector("#businessEmail").value = preset.email;
-    document.querySelector("#businessDetails").value = preset.details;
-    document.querySelector("#targetAudience").value = preset.target_audience || "";
-    document.querySelector("#uniqueSellingPoints").value = preset.unique_selling_points || "";
-    document.querySelector("#businessHours").value = preset.business_hours || "";
-    document.querySelector("#phoneNumber").value = preset.phone_number || "";
-    document.querySelector("#primaryColor").value = preset.primary_color || "#3b82f6";
-    document.querySelector("#secondaryColor").value = preset.secondary_color || "#1e40af";
-    document.querySelector("#accentColor").value = preset.accent_color || "#f59e0b";
+function setWizardNavVisible(visible) {
+  const nav = document.querySelector(".steps");
+  if (nav) nav.style.display = visible ? "" : "none";
+}
+
+function renderMyBusinessesList() {
+  const listEl = document.querySelector("#myBusinessesList");
+  if (!listEl) return;
+  if (!state.myBusinesses.length) {
+    listEl.innerHTML = `<p class="empty">No businesses yet. Create your first one below.</p>`;
+    return;
+  }
+  listEl.innerHTML = state.myBusinesses
+    .map(
+      (biz) => `
+        <div class="business-card${biz.businessId === state.selectedBusinessId ? " is-selected" : ""}" data-business-id="${escapeHtml(biz.businessId)}">
+          <div class="business-card-info">
+            <span>${escapeHtml(biz.name)}</span>
+            <span class="muted">/site/${escapeHtml(biz.slug)}</span>
+          </div>
+          <button type="button" class="business-delete-btn" data-business-id="${escapeHtml(biz.businessId)}" title="Delete this website">Delete</button>
+        </div>
+      `,
+    )
+    .join("");
+  listEl.querySelectorAll(".business-card").forEach((card) => {
+    card.addEventListener("click", () => {
+      const biz = state.myBusinesses.find((b) => b.businessId === card.dataset.businessId);
+      if (biz) selectBusiness(biz);
+    });
   });
+  listEl.querySelectorAll(".business-delete-btn").forEach((btn) => {
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const businessId = btn.dataset.businessId;
+      const biz = state.myBusinesses.find((b) => b.businessId === businessId);
+      if (!biz) return;
+      const confirmed = window.confirm(
+        `Permanently delete "${biz.name}"? This removes the live site, its menu items, orders/bookings/leads, and uploaded photos. This cannot be undone.`,
+      );
+      if (!confirmed) return;
+      btn.disabled = true;
+      btn.textContent = "Deleting...";
+      try {
+        await postJSON(`/businesses/${businessId}`, {}, "DELETE");
+        state.myBusinesses = state.myBusinesses.filter((b) => b.businessId !== businessId);
+        if (state.selectedBusinessId === businessId) {
+          state.selectedBusinessId = null;
+          state.businessId = null;
+          const panel = document.querySelector("#dashboardBusinessPanel");
+          if (panel) panel.hidden = true;
+        }
+        renderMyBusinessesList();
+      } catch (error) {
+        btn.disabled = false;
+        btn.textContent = "Delete";
+        window.alert(`Couldn't delete this website: ${error.message}`);
+      }
+    });
+  });
+}
+
+function selectBusiness(business) {
+  state.selectedBusinessId = business.businessId;
+  state.businessId = business.businessId;
+  renderMyBusinessesList();
+  const panel = document.querySelector("#dashboardBusinessPanel");
+  if (panel) panel.hidden = false;
+  const nameEl = document.querySelector("#dashboardBusinessName");
+  if (nameEl) nameEl.textContent = business.name;
+  const linkEl = document.querySelector("#dashboardBusinessLink");
+  if (linkEl) {
+    const url = `${window.location.origin}/site/${business.slug}`;
+    linkEl.textContent = url;
+    linkEl.href = url;
+  }
+  const frame = document.querySelector("#dashboardPreviewFrame");
+  if (frame) frame.srcdoc = business.htmlPreview || "";
+
+  // Generated dashboard (tailored to this business's real workflows) opens
+  // in its own tab via a plain link when one exists. The hand-coded generic
+  // panels stay as the permanent fallback for businesses where generation
+  // hasn't run yet or failed.
+  const generatedLinkWrap = document.querySelector("#generatedAdminLinkWrap");
+  const generatedLink = document.querySelector("#generatedAdminLink");
+  const genericPanels = document.querySelector("#genericAdminPanels");
+  const hasGeneratedAdmin = Boolean(business.adminHtmlPreview);
+
+  if (generatedLinkWrap) generatedLinkWrap.hidden = !hasGeneratedAdmin;
+  if (genericPanels) genericPanels.hidden = hasGeneratedAdmin;
+  if (generatedLink) {
+    generatedLink.href = hasGeneratedAdmin ? `/businesses/${business.businessId}/admin` : "#";
+  }
+
+  if (!hasGeneratedAdmin) {
+    renderAdmin();
+    renderMenuEditor();
+  }
+}
+
+document.querySelector("#submitRevisionBtn")?.addEventListener("click", async () => {
+  const input = document.querySelector("#revisionRequestInput");
+  const statusEl = document.querySelector("#revisionStatus");
+  const text = input?.value.trim() || "";
+  if (!text) {
+    if (statusEl) statusEl.textContent = "Describe what's wrong or missing first.";
+    return;
+  }
+  if (!state.businessId) return;
+  if (statusEl) statusEl.textContent = "Updating your site... this can take a couple of minutes.";
+  try {
+    const result = await postJSON(`/businesses/${state.businessId}/revise`, { revisionRequest: text });
+    if (result.accepted) {
+      const frame = document.querySelector("#dashboardPreviewFrame");
+      if (frame) frame.srcdoc = result.htmlPreview || "";
+      const cached = state.myBusinesses.find((b) => b.businessId === state.businessId);
+      if (cached) cached.htmlPreview = result.htmlPreview || "";
+      if (input) input.value = "";
+      if (statusEl) statusEl.textContent = "Done! Your live site now reflects this change.";
+    } else {
+      if (statusEl) statusEl.textContent = result.message || "That revision didn't work out — your site is unchanged.";
+    }
+  } catch (error) {
+    if (statusEl) statusEl.textContent = `Update failed: ${error.message}`;
+  }
 });
+
+async function enterDashboardMode(preferredBusinessId) {
+  setWizardNavVisible(false);
+  showPanel("dashboardView");
+  try {
+    const result = await fetch("/auth/my-businesses").then((r) => (r.ok ? r.json() : { businesses: [] }));
+    state.myBusinesses = result.businesses || [];
+  } catch (_) {
+    state.myBusinesses = [];
+  }
+  const panel = document.querySelector("#dashboardBusinessPanel");
+  if (panel) panel.hidden = true;
+  const myBusinessesSection = document.querySelector("#myBusinessesSection");
+  if (myBusinessesSection) myBusinessesSection.hidden = false;
+  renderMyBusinessesList();
+  const preferred = preferredBusinessId
+    ? state.myBusinesses.find((b) => b.businessId === preferredBusinessId)
+    : null;
+  if (preferred) {
+    selectBusiness(preferred);
+  } else if (state.myBusinesses.length) {
+    selectBusiness(state.myBusinesses[0]);
+  }
+}
+
+function enterWizardMode() {
+  state.spec = null;
+  state.businessId = null;
+  state.selectedBusinessId = null;
+  localStorage.removeItem("lf_business_id");
+  setWizardNavVisible(true);
+  showPanel("intake");
+}
+
+document.querySelector("#createNewBusinessBtn")?.addEventListener("click", enterWizardMode);
+
+async function refreshAuthState() {
+  const loggedOutEl = document.querySelector("#authLoggedOut");
+  const loggedInEl = document.querySelector("#authLoggedIn");
+  try {
+    const me = await fetch("/auth/me").then((r) => (r.ok ? r.json() : null));
+    if (me) {
+      state.owner = me;
+      if (loggedOutEl) loggedOutEl.hidden = true;
+      if (loggedInEl) {
+        loggedInEl.hidden = false;
+        const display = document.querySelector("#authEmailDisplay");
+        if (display) display.textContent = me.email;
+      }
+      await enterDashboardMode();
+      return;
+    }
+  } catch (_) {
+    // treat any failure as logged-out
+  }
+  state.owner = null;
+  state.myBusinesses = [];
+  state.selectedBusinessId = null;
+  if (loggedOutEl) loggedOutEl.hidden = false;
+  if (loggedInEl) loggedInEl.hidden = true;
+  setWizardNavVisible(false);
+  showPanel("loggedOutGate");
+}
+
+async function handleAuthSubmit(endpoint) {
+  const statusEl = document.querySelector("#authStatus");
+  const email = document.querySelector("#authEmail")?.value || "";
+  const password = document.querySelector("#authPassword")?.value || "";
+  if (statusEl) statusEl.textContent = "Working...";
+  try {
+    await postJSON(endpoint, { email, password });
+    if (statusEl) statusEl.textContent = "";
+    await refreshAuthState();
+  } catch (error) {
+    if (statusEl) statusEl.textContent = error.message;
+  }
+}
+
+document.querySelector("#authSignupBtn")?.addEventListener("click", () => handleAuthSubmit("/auth/signup"));
+document.querySelector("#authLoginBtn")?.addEventListener("click", () => handleAuthSubmit("/auth/login"));
+document.querySelector("#authLogoutBtn")?.addEventListener("click", async () => {
+  await postJSON("/auth/logout", {});
+  await refreshAuthState();
+});
+refreshAuthState();
 
 document.querySelector("#runDemo").addEventListener("click", runDemo);
 
@@ -1837,7 +2196,7 @@ async function extractAssetsFromBackend() {
       status.textContent = "Upload at least one image before extraction.";
       return;
     }
-    status.textContent = `Sending ${files.length} image${files.length === 1 ? "" : "s"} to Pollinations for extraction...`;
+    status.textContent = `Sending ${files.length} image${files.length === 1 ? "" : "s"} to Grok for extraction...`;
 
     const payload = await requestAmdBuildSpec(
       "/extract-assets",
@@ -1950,7 +2309,7 @@ document.querySelector("#applyAmdSpec").addEventListener("click", async () => {
     validateImportedSpec(imported);
     state.spec = imported;
     state.designSpec = generateDesignSpec(imported);
-    await renderAllFromSpec("Pollinations import");
+    await renderAllFromSpec("Grok import");
     showPanel("spec");
   } catch (error) {
     document.querySelector("#amdStatus").textContent = `Apply failed: ${error.message}`;
@@ -1972,7 +2331,7 @@ document.querySelector("#loadLatestAmdResult").addEventListener("click", async (
     const payload = await response.json();
     validateAmdPayload(payload);
     document.querySelector("#amdSpecInput").value = JSON.stringify(payload.buildSpec, null, 2);
-    await applyAmdPayload(payload, "Pollinations import");
+    await applyAmdPayload(payload, "Grok import");
     status.textContent = "Loaded amd_result.json from the notebook workspace and applied it to the UI.";
     showPanel("website");
   } catch (error) {
@@ -2008,10 +2367,10 @@ function renderAmdStatus(sourceLabel) {
   const status = document.querySelector("#amdStatus");
   if (!status || !state.spec) return;
   const source =
-    sourceLabel === "Pollinations import"
-      ? "Pollinations-generated BuildSpec is active."
+    sourceLabel === "Grok import"
+      ? "Grok-generated BuildSpec is active."
       : sourceLabel === "Fallback planner"
-        ? "Local fallback planner active. Images were sent to Pollinations vision extraction."
+        ? "Local fallback planner active. Images were sent to Grok vision extraction."
         : "Planner is active. Paste a BuildSpec JSON below to override."
   status.textContent = `${source} Spec: ${state.spec.business.name}, ${state.spec.business.vertical.replaceAll("_", " ")}, readiness ${state.spec.scores.businessReadiness}.`;
 }
@@ -2263,7 +2622,7 @@ function extractAssetSignals(assets) {
     `Files reviewed: ${assets.map((asset) => asset.name).join(", ")}`,
     `Detected: ${[...signals].join(", ")}`,
     ...inferred.map((item) => `- ${item}`),
-    "Pollinations vision extraction: upload images and click Extract & Build Site to extract menu items, services, prices, contact details, and visual brand cues.",
+    "Grok vision extraction: upload images and click Extract & Build Site to extract menu items, services, prices, contact details, and visual brand cues.",
   ].join("\n");
 }
 
@@ -2275,7 +2634,7 @@ function renderAmdInsightsPanel() {
     <section class="insights-panel">
       <div>
         <strong>AI found in your uploads</strong>
-        <p>${state.amdInsights.assetCount} asset${state.amdInsights.assetCount === 1 ? "" : "s"} analysed by Pollinations vision extraction.</p>
+        <p>${state.amdInsights.assetCount} asset${state.amdInsights.assetCount === 1 ? "" : "s"} analysed by Grok vision extraction.</p>
       </div>
       <div class="insights-grid">
         <article class="insight-card">
@@ -3942,9 +4301,9 @@ state.pipeline = {
   deployment: null,
 };
 
-async function postJSON(url, body) {
+async function postJSON(url, body, method = "POST") {
   const response = await fetch(url, {
-    method: "POST",
+    method,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
@@ -4091,9 +4450,17 @@ function renderGeneratedCode(result) {
   ];
 
   const previewHtml = generated?.html_preview || "";
+  const siteSlug = generated?.config?.siteSlug || "";
+  const siteUrl = siteSlug ? `${window.location.origin}/site/${siteSlug}` : "";
+  const liveLinkBlock = siteUrl
+    ? `<p class="muted" style="margin-bottom:.75rem;">
+        Live customer site: <a href="${escapeHtml(siteUrl)}" target="_blank" rel="noopener">${escapeHtml(siteUrl)}</a>
+      </p>`
+    : "";
   const previewBlock = previewHtml
     ? `<div class="website-preview-wrap">
         <h5 style="margin-bottom:.5rem;font-weight:600;">Live Preview</h5>
+        ${liveLinkBlock}
         <iframe srcdoc="" id="sitePreviewFrame"
           style="width:100%;height:520px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;"></iframe>
       </div>`
@@ -4242,8 +4609,75 @@ function clearPipelinePanels() {
   });
 }
 
+function ensureBusinessId() {
+  // Minted client-side since nothing in the backend assigns a stable id to
+  // a business (generate_build_spec rebuilds the business object fresh on
+  // every buildspec call and would drop one) -- must run after state.spec
+  // is already populated, mutating it directly rather than round-tripping
+  // through the backend. Persisted to localStorage as insurance against a
+  // mid-session reload losing the id before the next /generate-code call.
+  if (!state.spec.business) state.spec.business = {};
+  if (!state.spec.business.id) {
+    state.spec.business.id = localStorage.getItem("lf_business_id") || crypto.randomUUID();
+  }
+  state.businessId = state.spec.business.id;
+  localStorage.setItem("lf_business_id", state.businessId);
+}
+
+async function runCodeGenerationStep() {
+  const banner = document.querySelector("#generationErrorBanner");
+  const bannerMessage = document.querySelector("#generationErrorMessage");
+  if (banner) banner.hidden = true;
+
+  pushTimelineEvent("Code Generation Agent", "Generating Next.js + Tailwind source from BuildSpec...", "active");
+  try {
+    const itemFeatureKeys = new Set(["online_ordering", "catalog_reservation"]);
+    const hasItemsFeature = (state.spec?.includedFeatures || []).some((f) => itemFeatureKeys.has(f.key));
+    const menuItems = hasItemsFeature
+      ? (buildRestaurantExperienceData().items || [])
+      : [];
+    const finalState = state.graphExecution?.final_state || {};
+    const code = await postJSON("/generate-code", {
+      buildSpec: { ...state.spec, menuItems },
+      agentContext: {
+        requirements_spec: finalState.requirements_spec || null,
+        design_spec: finalState.design_spec || null,
+        reasoning_notes: finalState.reasoning_notes || [],
+        retrieved_memories: finalState.retrieved_memories || [],
+        critique_reports: finalState.critique_reports || [],
+        simulation_report: finalState.simulation_report || null,
+        reflection_report: finalState.reflection_report || null,
+        human_answers: state.humanAnswers || {},
+        research_results: state.pipeline?.research?.research_results || null,
+      },
+    });
+    state.pipeline.generatedCode = code;
+    renderGeneratedCode(code);
+    renderMenuEditor();
+    pushTimelineEvent("Code Generation Agent", "Production code generated.", "planned");
+    return true;
+  } catch (error) {
+    // A failed generation isn't a meaningful result to show as-is (the
+    // generic fallback template looks nothing like the business) -- surface
+    // a clear retry affordance instead of silently degrading.
+    pushTimelineEvent("Code Generation Agent", `Code generation failed: ${error.message}`, "warning");
+    if (banner && bannerMessage) {
+      bannerMessage.textContent =
+        error.message ||
+        "We hit a temporary issue generating your website. This is usually a brief server hiccup -- please try again.";
+      banner.hidden = false;
+    }
+    return false;
+  }
+}
+
+document.querySelector("#generationRetryBtn")?.addEventListener("click", () => {
+  runCodeGenerationStep();
+});
+
 async function runProductionPipeline() {
   if (!state.spec) return;
+  ensureBusinessId();
   const profile = getBusinessProfileInput();
   if (profile && "logo" in profile) delete profile.logo;
 
@@ -4262,30 +4696,7 @@ async function runProductionPipeline() {
   }
 
   // 2. Code Generation
-  pushTimelineEvent("Code Generation Agent", "Generating Next.js + Tailwind source from BuildSpec...", "active");
-  try {
-    const hasOrderingFeature = (state.spec?.includedFeatures || []).some((f) => f.key === "online_ordering");
-    const menuItems = hasOrderingFeature
-      ? (buildRestaurantExperienceData().items || [])
-      : [];
-    const finalState = state.graphExecution?.final_state || {};
-    const code = await postJSON("/generate-code", {
-      buildSpec: { ...state.spec, menuItems },
-      agentContext: {
-        requirements_spec: finalState.requirements_spec || null,
-        design_spec: finalState.design_spec || null,
-        reasoning_notes: finalState.reasoning_notes || [],
-        retrieved_memories: finalState.retrieved_memories || [],
-        human_answers: state.humanAnswers || {},
-        research_results: state.pipeline?.research?.research_results || null,
-      },
-    });
-    state.pipeline.generatedCode = code;
-    renderGeneratedCode(code);
-    pushTimelineEvent("Code Generation Agent", "Production code generated.", "planned");
-  } catch (error) {
-    pushTimelineEvent("Code Generation Agent", `Code generation failed: ${error.message}`, "warning");
-  }
+  await runCodeGenerationStep();
 
   // 3. Critique & Debate
   const generatedSource =
@@ -4317,5 +4728,12 @@ async function runProductionPipeline() {
     pushTimelineEvent("Deployment Agent", "Deployment package ready for handover.", "complete");
   } catch (error) {
     pushTimelineEvent("Deployment Agent", `Deployment generation failed: ${error.message}`, "warning");
+  }
+
+  // The wizard is a one-time "create your business" flow -- once it
+  // finishes, hand off into the persistent owner dashboard rather than
+  // leaving the user parked on the QA step.
+  if (state.owner && state.businessId) {
+    await enterDashboardMode(state.businessId);
   }
 }

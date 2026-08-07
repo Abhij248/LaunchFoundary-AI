@@ -5,15 +5,17 @@ import json
 import logging
 import mimetypes
 import os
+import shutil
 import re
+import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Cookie, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from agentic_graph import HumanInputRequired, iter_agent_graph_updates, run_agent_graph
@@ -27,10 +29,51 @@ from agentic_models import (
 from agentic_planner import ModelJsonPlanner, get_vision_config
 from buildspec_planner import generate_build_spec
 from research_agents import ResearchOrchestrator
-from code_generator import CodeGenerationOrchestrator
+from code_generator import CodeGenerationOrchestrator, CodeGenerator
 from critique_system import CritiqueOrchestrator
 from deployment_system import DeploymentOrchestrator
+import auth_store
+from menu_store import (
+    delete_business,
+    get_business,
+    get_business_build_context,
+    get_business_by_slug,
+    list_businesses_for_owner,
+    list_items,
+    replace_items,
+    update_business_preview,
+)
+import submissions_store
+from submissions_store import (
+    create_submission,
+    delete_submissions_for_business,
+    list_submissions,
+    update_submission_status,
+)
+from learned_memory_store import record_memory
+from custom_entities_store import (
+    claim_resource,
+    delete_entities_for_business,
+    list_claims,
+    list_entities,
+)
 
+SESSION_COOKIE_NAME = "lf_session"
+
+
+# Business/asset text routinely contains em-dashes, curly quotes, and other
+# non-ASCII characters. On Windows the console's stdout/stderr often use a
+# legacy codepage (cp1252/cp437) that can't encode them, so the plain
+# StreamHandler below would raise UnicodeEncodeError mid-write; Python's
+# logging then falls back to writing the error to stderr, and if THAT write
+# also blocks (e.g. a paused/QuickEdit console), the single-threaded server
+# deadlocks entirely -- with no exception ever surfacing. Reconfiguring with
+# errors="backslashreplace" makes the write always succeed instead.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+    except (AttributeError, ValueError):
+        pass
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -76,6 +119,12 @@ app.add_middleware(
 json_planner = None
 
 app.mount("/static", StaticFiles(directory=APP_DIR), name="static")
+
+# Owner-uploaded product/menu-item photos -- kept outside the repo (like
+# menu_items.db) since /static mounts the whole repo root publicly.
+UPLOADS_DIR = Path.home() / ".launchfoundry" / "uploads"
+UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
 
 
 async def process_image_with_pollinations(image_data: bytes, filename: str) -> dict[str, Any]:
@@ -502,7 +551,6 @@ def build_fallback_graph_execution(
             "tool_invocations": [],
             "reflection_report": None,
             "uncertainty_score": 0.0,
-            "debate_outcome": None,
             "simulation_report": None,
         },
         "events": [],
@@ -1023,6 +1071,7 @@ async def run_research(
 async def generate_code(
     request: Request,
     payload: str | None = Form(default=None),
+    lf_session: str | None = Cookie(default=None),
 ) -> dict[str, Any]:
     """Generate website code from BuildSpec using template + AI-assisted approach"""
     parsed_payload = await extract_request_payload(request, payload)
@@ -1035,6 +1084,12 @@ async def generate_code(
             raise HTTPException(status_code=400, detail="buildSpec is required")
 
         agent_context = parsed_payload.get("agentContext") or {}
+        # Anonymous generation is still allowed (unchanged from before auth
+        # existed) -- if logged in, the business gets linked to this owner;
+        # if not, it stays unowned, same as every business created so far.
+        owner = auth_store.get_owner_for_session(lf_session)
+        if owner:
+            agent_context = {**agent_context, "owner_id": owner["ownerId"]}
 
         # Initialize planner if not already done
         global json_planner
@@ -1046,6 +1101,21 @@ async def generate_code(
 
         # Generate website code
         generated_code = code_orchestrator.generate_website(build_spec, agent_context=agent_context)
+
+        if generated_code.generation_failed:
+            logger.warning(
+                "Website generation failed for business %s: %s",
+                build_spec.get("business", {}).get("id", ""),
+                generated_code.generation_error,
+            )
+            reason = generated_code.generation_error or "an unknown server-side issue"
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"We couldn't generate your website: {reason} This is usually a brief "
+                    "server or model hiccup, not a problem with your business details. Please try again."
+                ),
+            )
 
         logger.info("Successfully generated website code")
         return {
@@ -1059,9 +1129,344 @@ async def generate_code(
             },
             "vertical": build_spec.get("business", {}).get("vertical", "unknown"),
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception(f"Error in generate_code: {e}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@app.get("/businesses/{business_id}/items")
+def get_business_items(business_id: str) -> dict[str, Any]:
+    """Owner-facing + generated-page read of the current live item list (MVP CMS)."""
+    return {"items": list_items(business_id)}
+
+
+@app.put("/businesses/{business_id}/items")
+async def put_business_items(business_id: str, request: Request) -> dict[str, Any]:
+    """Whole-list replace -- the owner's menu editor saves the entire array at once."""
+    payload = await request.json()
+    items = payload.get("items", [])
+    if not isinstance(items, list):
+        raise HTTPException(status_code=400, detail="items must be a list")
+    return {"items": replace_items(business_id, items)}
+
+
+@app.delete("/businesses/{business_id}")
+def delete_business_route(
+    business_id: str,
+    lf_session: str | None = Cookie(default=None),
+) -> dict[str, Any]:
+    """Permanently deletes a business: the record itself, its menu items,
+    submissions, and any uploaded product photos. Only the owner who created
+    it can delete it -- an unowned or someone-else's business 404s rather
+    than revealing whether the id exists."""
+    owner = auth_store.get_owner_for_session(lf_session)
+    if not owner:
+        raise HTTPException(status_code=401, detail="Not logged in")
+    deleted = delete_business(business_id, owner["ownerId"])
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Business not found, or you don't own it")
+    delete_submissions_for_business(business_id)
+    delete_entities_for_business(business_id)
+    uploads_dir = UPLOADS_DIR / business_id
+    if uploads_dir.exists():
+        shutil.rmtree(uploads_dir, ignore_errors=True)
+    return {"deleted": True}
+
+
+# Generic, schemaless per-business entities -- for businesses whose real
+# backend need doesn't fit the fixed items/submissions schema (e.g. a
+# theatre's showtimes with per-seat availability). Entities themselves are
+# only ever created server-side (during generation, via real tool-calling in
+# code_generator.py's _provision_custom_backend) -- these public routes are
+# read + atomic-claim only, matching how a real customer interacts with them.
+@app.get("/businesses/{business_id}/entities/{entity_type}")
+def get_entities(business_id: str, entity_type: str) -> dict[str, Any]:
+    return {"entities": list_entities(business_id, entity_type)}
+
+
+@app.get("/businesses/{business_id}/entities/{entity_type}/{entity_id}/claims")
+def get_entity_claims(business_id: str, entity_type: str, entity_id: str) -> dict[str, Any]:
+    return {"claimedResourceKeys": list_claims(business_id, entity_type, entity_id)}
+
+
+@app.post("/businesses/{business_id}/claim")
+async def claim_entity_resource(business_id: str, request: Request) -> dict[str, Any]:
+    """Atomically claim one resource (e.g. one seat) within one entity (e.g.
+    one showtime). This is the real backend guarantee behind seat selection
+    -- returns 409, not a silent success, if someone already claimed it."""
+    payload = await request.json()
+    entity_type = str(payload.get("entityType") or "")
+    entity_id = str(payload.get("entityId") or "")
+    resource_key = str(payload.get("resourceKey") or "")
+    if not (entity_type and entity_id and resource_key):
+        raise HTTPException(status_code=400, detail="entityType, entityId, and resourceKey are required")
+    claimed = claim_resource(business_id, entity_type, entity_id, resource_key)
+    if not claimed:
+        raise HTTPException(status_code=409, detail=f'"{resource_key}" was already claimed by someone else')
+    return {"claimed": True, "resourceKey": resource_key}
+
+
+_ITEM_IMAGE_CONTENT_TYPES = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+}
+_ITEM_IMAGE_MAX_BYTES = 8 * 1024 * 1024
+
+
+def _safe_path_component(value: str, fallback: str) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9_-]", "_", value or "")[:80]
+    return cleaned or fallback
+
+
+@app.post("/businesses/{business_id}/items/image")
+async def upload_item_image(business_id: str, item_id: str, file: UploadFile = File(...)) -> dict[str, Any]:
+    """Owner uploads a real photo for one catalog/menu item -- this is an
+    admin-dashboard capability, distinct from anything the LLM generates for
+    the public site. The generated page just renders whatever imageUrl this
+    produces, same as it already does for name/price/description.
+
+    item_id is a query param, not a path segment: item ids are opaque
+    strings that can contain slashes/spaces/punctuation (same reason the
+    generated pages are told to pass them via data-id, never splice them
+    into a URL path directly)."""
+    content_type = (file.content_type or "").lower()
+    ext = _ITEM_IMAGE_CONTENT_TYPES.get(content_type)
+    if not ext:
+        raise HTTPException(status_code=400, detail="Unsupported image type -- use JPEG, PNG, WEBP, or GIF.")
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Empty file")
+    if len(file_bytes) > _ITEM_IMAGE_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="Image too large (max 8MB)")
+
+    safe_business_id = _safe_path_component(business_id, "business")
+    safe_item_id = _safe_path_component(item_id, "item")
+    business_dir = UPLOADS_DIR / safe_business_id
+    business_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"{safe_item_id}{ext}"
+    (business_dir / filename).write_bytes(file_bytes)
+
+    return {"imageUrl": f"/uploads/{safe_business_id}/{filename}"}
+
+
+@app.get("/site/{slug}")
+def get_public_site(slug: str) -> HTMLResponse:
+    """Serves a business's generated site to real customers at its own URL --
+    step 2 of turning this from a builder-tool-only preview into a real
+    customer-facing product."""
+    business = get_business_by_slug(slug)
+    if not business or not business.get("htmlPreview"):
+        raise HTTPException(status_code=404, detail="Site not found")
+    return HTMLResponse(content=business["htmlPreview"])
+
+
+@app.get("/businesses/{business_id}/admin")
+def get_business_admin_page(
+    business_id: str,
+    lf_session: str | None = Cookie(default=None),
+) -> HTMLResponse:
+    """The LLM-generated owner dashboard -- unlike /site/{slug}, this is
+    deliberately NOT public: it shows real customer data (names, contact
+    info, submission history), so ownership is checked before anything is
+    returned, not just before an action is taken."""
+    owner = auth_store.get_owner_for_session(lf_session)
+    if not owner:
+        raise HTTPException(status_code=401, detail="Not logged in")
+    business = get_business(business_id)
+    if not business or business.get("ownerId") != owner["ownerId"]:
+        raise HTTPException(status_code=404, detail="Business not found, or you don't own it")
+    if not business.get("adminHtmlPreview"):
+        raise HTTPException(status_code=404, detail="No generated admin dashboard yet for this business")
+    return HTMLResponse(content=business["adminHtmlPreview"])
+
+
+@app.post("/businesses/{business_id}/revise")
+async def revise_business_site(business_id: str, request: Request) -> dict[str, Any]:
+    """Lets an owner describe something wrong or missing and get a targeted
+    fix applied to their already-live page, rather than starting over. A
+    single generation attempt is a probabilistic LLM call and won't always
+    get everything right (missing integration hooks, mixed-up sections,
+    etc.) -- this is the correction mechanism for that, triggered by the
+    owner instead of guessed at automatically."""
+    payload = await request.json()
+    revision_request = (payload.get("revisionRequest") or "").strip()
+    if not revision_request:
+        raise HTTPException(status_code=400, detail="revisionRequest is required")
+
+    context = get_business_build_context(business_id)
+    if not context or not context.get("buildSpec"):
+        raise HTTPException(
+            status_code=404,
+            detail="No generation history found for this business -- generate a site before requesting a fix.",
+        )
+
+    build_spec = {**context["buildSpec"], "menuItems": list_items(business_id)}
+    current_html = context.get("htmlPreview") or ""
+
+    global json_planner
+    if json_planner is None:
+        json_planner = ModelJsonPlanner()
+    generator = CodeGenerator(json_planner)
+
+    feature_keys = {str(f.get("key", "")).lower() for f in build_spec.get("includedFeatures", [])}
+    needs_reserve = "catalog_reservation" in feature_keys
+    needs_cart = (not needs_reserve) and ("online_ordering" in feature_keys or bool(build_spec.get("menuItems")))
+
+    def _passes_gate(html: str) -> bool:
+        return bool(html) and CodeGenerator._html_has_working_commerce_ui(
+            html, needs_cart, needs_reserve, business_id
+        )
+
+    # Try a targeted edit first -- sends the model only the page section(s)
+    # that plausibly need to change instead of the entire page, so most
+    # revisions are cheaper, faster, and leave everything else byte-for-byte
+    # untouched. Falls back to a full-page rewrite if the targeted approach
+    # doesn't produce a usable result (still gated the same way either way),
+    # and keeps the old live page if neither passes -- this only adds a
+    # cheaper first attempt, it never makes a revision less likely to work.
+    revised_html = generator.revise_html_with_targeted_edit(
+        build_spec, current_html, revision_request
+    )
+    used_targeted_edit = bool(revised_html)
+    if not _passes_gate(revised_html):
+        revised_html = generator.generate_html_with_llm(
+            build_spec, {}, revision_request=revision_request, current_html=current_html
+        )
+        used_targeted_edit = False
+
+    if _passes_gate(revised_html):
+        update_business_preview(business_id, revised_html)
+        logger.info(
+            "Revision accepted for business %s (targeted_edit=%s)",
+            business_id, used_targeted_edit,
+        )
+        # Real owner feedback about what the original generation missed --
+        # the highest-value learned-memory signal there is, since it's not
+        # an AI's own self-critique but an actual person asking for a fix.
+        business_meta = build_spec.get("business", {})
+        try:
+            record_memory(
+                business_id=business_id,
+                vertical=str(business_meta.get("vertical", "")),
+                subtype=str(business_meta.get("subtype", "")),
+                risk_level=str(business_meta.get("riskLevel", "standard")).lower(),
+                source="revision_request",
+                title=f"Owner requested a fix for {business_meta.get('vertical', 'a')} business",
+                summary=revision_request,
+            )
+        except Exception:
+            logger.warning("Failed to record learned memory for revision request", exc_info=True)
+        return {"accepted": True, "htmlPreview": revised_html}
+
+    return {
+        "accepted": False,
+        "htmlPreview": current_html,
+        "message": (
+            "The revision didn't pass validation, so your live site is unchanged. "
+            "Try rephrasing the request or being more specific."
+        ),
+    }
+
+
+@app.post("/businesses/{business_id}/submissions")
+async def post_submission(business_id: str, request: Request) -> dict[str, Any]:
+    """Called directly by the generated customer-facing page (same-origin
+    fetch, no auth) whenever a visitor places an order/reservation/completes
+    a lead form -- works whether that page is standalone at /site/{slug} or
+    embedded in the builder's preview iframe, unlike the old postMessage
+    approach which only ever worked in the iframe case."""
+    payload = await request.json()
+    submission_type = payload.get("type", "")
+    if submission_type not in {"order", "reservation", "lead"}:
+        raise HTTPException(status_code=400, detail="type must be one of order, reservation, lead")
+    record = create_submission(
+        business_id, submission_type,
+        customer=payload.get("customer", ""), summary=payload.get("summary", ""), contact=payload.get("contact", ""),
+    )
+    if record is None:
+        raise HTTPException(status_code=400, detail="business_id is required")
+    return record
+
+
+@app.get("/businesses/{business_id}/submissions")
+def get_submissions(business_id: str) -> dict[str, Any]:
+    return {"submissions": list_submissions(business_id)}
+
+
+@app.patch("/businesses/{business_id}/submissions/{submission_id}")
+async def patch_submission_status(business_id: str, submission_id: str, request: Request) -> dict[str, Any]:
+    """Owner-facing: mark an order/booking/lead as in progress, completed, or
+    cancelled from the admin dashboard -- this is admin-dashboard code (this
+    app's own app.js), not something a 'Request a Fix' on the generated site
+    could ever reach."""
+    payload = await request.json()
+    status = payload.get("status", "")
+    if status not in submissions_store.VALID_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"status must be one of {sorted(submissions_store.VALID_STATUSES)}",
+        )
+    record = update_submission_status(business_id, submission_id, status)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    return record
+
+
+@app.post("/auth/signup")
+async def auth_signup(request: Request, response: Response) -> dict[str, Any]:
+    payload = await request.json()
+    try:
+        owner = auth_store.signup(payload.get("email", ""), payload.get("password", ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    token = auth_store.create_session(owner["ownerId"])
+    response.set_cookie(
+        SESSION_COOKIE_NAME, token, httponly=True, samesite="lax",
+        max_age=int(auth_store.SESSION_TTL.total_seconds()),
+    )
+    return owner
+
+
+@app.post("/auth/login")
+async def auth_login(request: Request, response: Response) -> dict[str, Any]:
+    payload = await request.json()
+    try:
+        owner = auth_store.login(payload.get("email", ""), payload.get("password", ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+    token = auth_store.create_session(owner["ownerId"])
+    response.set_cookie(
+        SESSION_COOKIE_NAME, token, httponly=True, samesite="lax",
+        max_age=int(auth_store.SESSION_TTL.total_seconds()),
+    )
+    return owner
+
+
+@app.post("/auth/logout")
+def auth_logout(response: Response, lf_session: str | None = Cookie(default=None)) -> dict[str, Any]:
+    auth_store.destroy_session(lf_session)
+    response.delete_cookie(SESSION_COOKIE_NAME)
+    return {"ok": True}
+
+
+@app.get("/auth/me")
+def auth_me(lf_session: str | None = Cookie(default=None)) -> dict[str, Any]:
+    owner = auth_store.get_owner_for_session(lf_session)
+    if not owner:
+        raise HTTPException(status_code=401, detail="Not logged in")
+    return owner
+
+
+@app.get("/auth/my-businesses")
+def auth_my_businesses(lf_session: str | None = Cookie(default=None)) -> dict[str, Any]:
+    owner = auth_store.get_owner_for_session(lf_session)
+    if not owner:
+        raise HTTPException(status_code=401, detail="Not logged in")
+    return {"businesses": list_businesses_for_owner(owner["ownerId"])}
 
 
 @app.post("/run-critique")

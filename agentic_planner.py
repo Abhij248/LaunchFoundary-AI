@@ -5,7 +5,7 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Callable, TypeVar
 
 import httpx
 from pydantic import BaseModel, ValidationError
@@ -71,15 +71,17 @@ PROVIDER_CONFIG = {
         "model_env": ("XAI_TEXT_MODEL", "xai_text_model"),
         "default_model": "grok-code-fast-1",
         "best_model_env": ("XAI_BEST_MODEL", "xai_best_model"),
-        # grok-4.5 is flagship but reasoning-heavy — it burned its entire
-        # completion budget on hidden reasoning tokens and still hit the
-        # length cap mid-CSS on a real generation run (finish_reason:
-        # "length" at 16000 tokens). grok-4.20-0309-non-reasoning is also
-        # flagship-tier, spends 0 tokens on hidden reasoning, and completed
-        # the same class of long-form HTML/CSS/JS generation naturally
-        # (finish_reason: "stop") well under budget — more reliable for a
-        # single large-output generation task like this one.
+        # grok-4.5 spends part of its budget on hidden reasoning tokens before
+        # writing any output, which doesn't improve a long creative HTML/CSS/JS
+        # generation the way it would a logic/math task -- it just eats into
+        # the same token budget. In real use this repeatedly caused truncated
+        # (finish_reason: "length") or badly-delayed (>180s) generations, even
+        # at reasoning_effort="medium". grok-4.20-0309-non-reasoning is also
+        # flagship-tier, spends zero tokens on hidden reasoning, and reliably
+        # finished the same class of generation naturally (finish_reason:
+        # "stop") in every test -- switched back to it for reliability.
         "default_best_model": "grok-4.20-0309-non-reasoning",
+        "best_model_reasoning_effort": None,
         "vision_model_env": ("XAI_VISION_MODEL", "xai_vision_model"),
         "default_vision_model": "grok-4.20-0309-non-reasoning",
     },
@@ -296,6 +298,10 @@ class ModelJsonPlanner:
         ).strip()
         return configured or config.get("default_best_model") or self.model_name
 
+    def best_model_reasoning_effort(self) -> str | None:
+        config = PROVIDER_CONFIG[self.provider]
+        return config.get("best_model_reasoning_effort")
+
     def generate_text(
         self,
         prompt: str,
@@ -303,6 +309,7 @@ class ModelJsonPlanner:
         temperature: float | None = None,
         model: str | None = None,
         timeout: float = 60.0,
+        reasoning_effort: str | None = None,
     ) -> str:
         request_temperature = clamp_temperature(
             self.default_temperature
@@ -318,10 +325,7 @@ class ModelJsonPlanner:
                     }
                     if self.api_key:
                         headers["Authorization"] = f"Bearer {self.api_key}"
-                    response = client.post(
-                        self.pollinations_url,
-                        headers=headers,
-                        json={
+                    payload = {
                             "model": model or self.model_name,
                             "messages": [
                                 {
@@ -336,7 +340,13 @@ class ModelJsonPlanner:
                             ],
                             "temperature": request_temperature,
                             "max_tokens": max_new_tokens,
-                        },
+                        }
+                    if reasoning_effort:
+                        payload["reasoning_effort"] = reasoning_effort
+                    response = client.post(
+                        self.pollinations_url,
+                        headers=headers,
+                        json=payload,
                         timeout=timeout
                     )
                     response.raise_for_status()
@@ -367,6 +377,106 @@ class ModelJsonPlanner:
         raise PlannerGenerationError(
             f"{self.provider} API error: "
             f"{last_error}"
+        )
+
+
+    def generate_with_tools(
+        self,
+        prompt: str,
+        tools: list[dict[str, Any]],
+        tool_executor: Callable[[str, dict[str, Any]], Any],
+        model: str | None = None,
+        temperature: float | None = None,
+        max_new_tokens: int = 500,
+        max_iterations: int = 6,
+        timeout: float = 60.0,
+    ) -> str:
+        """Real multi-turn function-calling (confirmed working against
+        grok-4.20-0309-non-reasoning via the xAI chat-completions endpoint --
+        standard OpenAI-compatible tools/tool_choice/tool_calls shape). The
+        model decides for itself how many tools to call and in what order;
+        this just drives the request/response loop and executes whatever it
+        asks for via tool_executor(name, arguments) -> JSON-serializable
+        result. Returns the model's final text once it stops calling tools.
+
+        max_iterations is a hard safety cap (mirrors MAX_STREAM_UPDATES in
+        agentic_graph.py) -- a model that never stops calling tools raises
+        PlannerGenerationError instead of looping forever.
+        """
+        request_temperature = clamp_temperature(
+            self.default_temperature if temperature is None else temperature
+        )
+        messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        for iteration in range(max_iterations):
+            payload = {
+                "model": model or self.model_name,
+                "messages": messages,
+                "tools": tools,
+                "tool_choice": "auto",
+                "temperature": request_temperature,
+                "max_tokens": max_new_tokens,
+            }
+            last_error = None
+            result = None
+            for _ in range(2):
+                try:
+                    with httpx.Client() as client:
+                        response = client.post(
+                            self.pollinations_url, headers=headers, json=payload, timeout=timeout
+                        )
+                        response.raise_for_status()
+                        result = response.json()
+                    break
+                except httpx.HTTPStatusError as e:
+                    response_text = e.response.text if e.response is not None else ""
+                    last_error = f"{e} | body={response_text[:500]}"
+                    continue
+                except Exception as e:
+                    last_error = e
+                    continue
+            if result is None:
+                self.register_failure(f"{self.provider}_generate_with_tools", last_error)
+                raise PlannerGenerationError(f"{self.provider} API error: {last_error}")
+
+            choices = result.get("choices") if isinstance(result, dict) else None
+            if not isinstance(choices, list) or not choices:
+                raise PlannerGenerationError(f"{self.provider} tool-call response had no choices")
+            message = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
+            tool_calls = message.get("tool_calls")
+
+            if not tool_calls:
+                content = message.get("content")
+                return content if isinstance(content, str) else "{}"
+
+            messages.append({
+                "role": "assistant",
+                "content": message.get("content") or "",
+                "tool_calls": tool_calls,
+            })
+            for call in tool_calls:
+                call_id = call.get("id", "")
+                fn = call.get("function", {}) if isinstance(call, dict) else {}
+                name = fn.get("name", "")
+                try:
+                    arguments = json.loads(fn.get("arguments") or "{}")
+                except json.JSONDecodeError:
+                    arguments = {}
+                try:
+                    tool_result = tool_executor(name, arguments)
+                except Exception as exc:
+                    tool_result = {"error": str(exc)}
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": json.dumps(tool_result, default=str),
+                })
+
+        raise PlannerGenerationError(
+            f"{self.provider} tool-calling exceeded max_iterations={max_iterations} without finishing"
         )
 
 

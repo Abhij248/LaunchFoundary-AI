@@ -3,9 +3,13 @@ uvicorn[standard]
 python-multipart
 pydantic>=2.8
 langgraph
+psycopg[binary]
 transformers>=4.49.0
 accelerate
 qwen-vl-utils
 pillow
 sentencepiece
 torchvision
+# browser_smoke_test.py (post-generation website testing) -- after installing,
+# the Chromium binary itself still needs: playwright install chromium
+playwright

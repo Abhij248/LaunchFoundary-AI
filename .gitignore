@@ -1,2 +1,8 @@
 .aider*
 .env
+generated_previews/
+__pycache__/
+*.pyc
+debug.log*
+server_out.txt
+server_err.txt
