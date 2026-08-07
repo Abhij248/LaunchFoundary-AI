@@ -4,12 +4,15 @@ python-multipart
 pydantic>=2.8
 langgraph
 psycopg[binary]
-transformers>=4.49.0
-accelerate
-qwen-vl-utils
-pillow
-sentencepiece
-torchvision
-# browser_smoke_test.py (post-generation website testing) -- after installing,
-# the Chromium binary itself still needs: playwright install chromium
-playwright
+# browser_smoke_test.py (post-generation website testing). Pinned exactly
+# to match the mcr.microsoft.com/playwright/python Docker image tag in the
+# Dockerfile -- that image ships this version's Chromium build already
+# installed, so a version drift here would make it fail to launch.
+playwright==1.62.0
+
+# NOTE: torch/transformers/accelerate/qwen-vl-utils/pillow/sentencepiece were
+# removed (2026-08-07) -- they were only used by amd_vision_extract.py, which
+# nothing in the app imports. Real vision extraction goes through the hosted
+# Pollinations API (process_image_with_pollinations in
+# amd_inference_server.py), not local torch inference. If that file is ever
+# wired back in, re-add its deps from requirements-amd-vision.txt.

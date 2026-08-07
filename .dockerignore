@@ -1,0 +1,10 @@
+aider-env/
+__pycache__/
+*.pyc
+.git/
+.env
+debug.log*
+server_out.txt
+server_err.txt
+generated_previews/
+cineora_test_preview.html
