@@ -447,6 +447,14 @@
       </section>
     </main>
 
+    <script>
+      // Set this to the backend's URL when this frontend is deployed
+      // separately from it (e.g. this file on Vercel, the FastAPI backend
+      // on Render) -- e.g. window.API_BASE_URL = "https://your-backend.onrender.com";
+      // Leave empty for local dev, where the backend serves this page
+      // itself (same-origin, no prefix needed).
+      window.API_BASE_URL = "";
+    </script>
     <script src="app.js"></script>
   </body>
 </html>

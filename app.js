@@ -1,5 +1,16 @@
 let activePageIndex = 0;
 
+// Set to the backend's URL when this frontend is deployed separately from
+// it (e.g. this file on Vercel, the FastAPI backend on Render) --
+// window.API_BASE_URL can be set by an inline <script> in index.html before
+// this file loads. Left empty for local dev, where the backend serves this
+// page itself (same-origin, no prefix needed).
+const API_BASE_URL = window.API_BASE_URL || "";
+
+function apiUrl(path) {
+  return `${API_BASE_URL}${path}`;
+}
+
 window.latestSpec = null;
 window.latestDesignSpec = null;
 window.latestRestaurant = null;
@@ -1299,7 +1310,7 @@ async function renderAdmin() {
   if (state.businessId) {
     let submissions = [];
     try {
-      const res = await fetch(`/businesses/${state.businessId}/submissions`);
+      const res = await fetch(apiUrl(`/businesses/${state.businessId}/submissions`), { credentials: "include" });
       const data = await res.json();
       submissions = Array.isArray(data.submissions) ? data.submissions : [];
     } catch (_) {
@@ -1336,7 +1347,7 @@ async function renderMenuEditor() {
     return;
   }
   try {
-    const response = await fetch(`/businesses/${state.businessId}/items`);
+    const response = await fetch(apiUrl(`/businesses/${state.businessId}/items`), { credentials: "include" });
     const data = await response.json();
     state.menuEditorItems = Array.isArray(data.items) ? data.items : [];
   } catch (error) {
@@ -1438,8 +1449,9 @@ function paintMenuEditor() {
       try {
         const formData = new FormData();
         formData.append("file", file);
-        const response = await fetch(`/businesses/${state.businessId}/items/image?item_id=${encodeURIComponent(item.id)}`, {
+        const response = await fetch(apiUrl(`/businesses/${state.businessId}/items/image?item_id=${encodeURIComponent(item.id)}`), {
           method: "POST",
+          credentials: "include",
           body: formData,
         });
         if (!response.ok) {
@@ -1586,9 +1598,10 @@ function qaFixesFor(spec) {
 
 async function requestLiveBuildSpec() {
   const response = await fetch(
-    "/generate-buildspec-stream",
+    apiUrl("/generate-buildspec-stream"),
     {
       method: "POST",
+      credentials: "include",
       headers: {
         "Content-Type":
           "application/json",
@@ -2086,7 +2099,7 @@ async function enterDashboardMode(preferredBusinessId) {
   setWizardNavVisible(false);
   showPanel("dashboardView");
   try {
-    const result = await fetch("/auth/my-businesses").then((r) => (r.ok ? r.json() : { businesses: [] }));
+    const result = await fetch(apiUrl("/auth/my-businesses"), { credentials: "include" }).then((r) => (r.ok ? r.json() : { businesses: [] }));
     state.myBusinesses = result.businesses || [];
   } catch (_) {
     state.myBusinesses = [];
@@ -2121,7 +2134,7 @@ async function refreshAuthState() {
   const loggedOutEl = document.querySelector("#authLoggedOut");
   const loggedInEl = document.querySelector("#authLoggedIn");
   try {
-    const me = await fetch("/auth/me").then((r) => (r.ok ? r.json() : null));
+    const me = await fetch(apiUrl("/auth/me"), { credentials: "include" }).then((r) => (r.ok ? r.json() : null));
     if (me) {
       state.owner = me;
       if (loggedOutEl) loggedOutEl.hidden = true;
@@ -2440,17 +2453,19 @@ async function requestAmdBuildSpec(
     });
 
     response = await fetch(
-      endpoint,
+      apiUrl(endpoint),
       {
         method: "POST",
+        credentials: "include",
         body: formData,
       },
     );
   } else {
     response = await fetch(
-      endpoint,
+      apiUrl(endpoint),
       {
         method: "POST",
+        credentials: "include",
         headers: {
           "Content-Type":
             "application/json",
@@ -4302,8 +4317,9 @@ state.pipeline = {
 };
 
 async function postJSON(url, body, method = "POST") {
-  const response = await fetch(url, {
+  const response = await fetch(apiUrl(url), {
     method,
+    credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });

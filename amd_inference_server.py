@@ -108,10 +108,20 @@ def load_local_env() -> None:
 
 load_local_env()
 
+# Set when the frontend is deployed separately from this backend (e.g.
+# frontend on Vercel, this backend on Render) -- the exact origin the
+# frontend is served from, e.g. "https://launchfoundry.vercel.app". Left
+# unset for local dev, where the frontend is served by this same app
+# (same-origin, so CORS doesn't come into play at all). A wildcard origin
+# can't be combined with allow_credentials=True (browsers reject it), so
+# this must be a real origin once the frontend moves elsewhere.
+FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "").strip()
+CROSS_ORIGIN_DEPLOYMENT = bool(FRONTEND_ORIGIN)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
+    allow_origins=[FRONTEND_ORIGIN] if CROSS_ORIGIN_DEPLOYMENT else ["http://127.0.0.1:8000", "http://localhost:8000"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -1425,7 +1435,9 @@ async def auth_signup(request: Request, response: Response) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc))
     token = auth_store.create_session(owner["ownerId"])
     response.set_cookie(
-        SESSION_COOKIE_NAME, token, httponly=True, samesite="lax",
+        SESSION_COOKIE_NAME, token, httponly=True,
+        samesite="none" if CROSS_ORIGIN_DEPLOYMENT else "lax",
+        secure=CROSS_ORIGIN_DEPLOYMENT,
         max_age=int(auth_store.SESSION_TTL.total_seconds()),
     )
     return owner
@@ -1440,7 +1452,9 @@ async def auth_login(request: Request, response: Response) -> dict[str, Any]:
         raise HTTPException(status_code=401, detail=str(exc))
     token = auth_store.create_session(owner["ownerId"])
     response.set_cookie(
-        SESSION_COOKIE_NAME, token, httponly=True, samesite="lax",
+        SESSION_COOKIE_NAME, token, httponly=True,
+        samesite="none" if CROSS_ORIGIN_DEPLOYMENT else "lax",
+        secure=CROSS_ORIGIN_DEPLOYMENT,
         max_age=int(auth_store.SESSION_TTL.total_seconds()),
     )
     return owner

@@ -1,0 +1,19 @@
+# This Vercel deployment is the static frontend only (index.html, app.js,
+# styles.css) -- the FastAPI backend is hosted separately (see README).
+# Everything else in this repo is backend source or unrelated tooling and
+# must not be published as a static asset.
+
+*.py
+*.pyc
+*.ipynb
+__pycache__/
+aider-env/
+requirements*.txt
+.env
+.env.example
+.gitignore
+README.md
+debug.log*
+server_out.txt
+server_err.txt
+generated_previews/
