@@ -2205,6 +2205,10 @@ async function extractAssetsFromBackend() {
   const profile = getBusinessProfileInput();
 
   try {
+    if (!state.owner) {
+      status.textContent = "Please sign up or log in (top left) before extracting assets.";
+      return;
+    }
     if (!files.length) {
       status.textContent = "Upload at least one image before extraction.";
       return;

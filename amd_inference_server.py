@@ -61,6 +61,17 @@ from custom_entities_store import (
 SESSION_COOKIE_NAME = "lf_session"
 
 
+def _require_login(lf_session: str | None) -> dict[str, Any]:
+    """Every endpoint that triggers a real, paid LLM/vision API call must
+    require a logged-in owner -- without this, anyone with the URL (not just
+    anyone using the frontend, which only ever soft-blocked this client-side)
+    can run up real API costs with zero rate limiting anywhere in the app."""
+    owner = auth_store.get_owner_for_session(lf_session)
+    if not owner:
+        raise HTTPException(status_code=401, detail="Please log in before generating a business website.")
+    return owner
+
+
 # Business/asset text routinely contains em-dashes, curly quotes, and other
 # non-ASCII characters. On Windows the console's stdout/stderr often use a
 # legacy codepage (cp1252/cp437) that can't encode them, so the plain
@@ -760,7 +771,9 @@ async def generate_buildspec(
     request: Request,
     payload: str | None = Form(default=None),
     files: list[UploadFile] | None = File(default=None),
+    lf_session: str | None = Cookie(default=None),
 ) -> dict[str, Any]:
+    _require_login(lf_session)
     parsed_payload = await extract_request_payload(request, payload)
     planner = ModelJsonPlanner()
     planner.begin_request()
@@ -861,7 +874,9 @@ async def generate_buildspec_stream(
     request: Request,
     payload: str | None = Form(default=None),
     files: list[UploadFile] | None = File(default=None),
+    lf_session: str | None = Cookie(default=None),
 ) -> StreamingResponse:
+    _require_login(lf_session)
     parsed_payload = await extract_request_payload(request, payload)
     planner = ModelJsonPlanner()
     planner.begin_request()
@@ -1028,8 +1043,10 @@ async def generate_buildspec_stream(
 async def run_research(
     request: Request,
     payload: str | None = Form(default=None),
+    lf_session: str | None = Cookie(default=None),
 ) -> dict[str, Any]:
     """Run deep research agents for competitor analysis, local SEO, and menu/service extraction"""
+    _require_login(lf_session)
     parsed_payload = await extract_request_payload(request, payload)
     logger.info("Received run_research request")
     logger.debug(f"Research payload: {parsed_payload}")
@@ -1084,6 +1101,7 @@ async def generate_code(
     lf_session: str | None = Cookie(default=None),
 ) -> dict[str, Any]:
     """Generate website code from BuildSpec using template + AI-assisted approach"""
+    owner = _require_login(lf_session)
     parsed_payload = await extract_request_payload(request, payload)
     logger.info("Received generate_code request")
     logger.debug(f"Code generation payload: {parsed_payload}")
@@ -1094,12 +1112,7 @@ async def generate_code(
             raise HTTPException(status_code=400, detail="buildSpec is required")
 
         agent_context = parsed_payload.get("agentContext") or {}
-        # Anonymous generation is still allowed (unchanged from before auth
-        # existed) -- if logged in, the business gets linked to this owner;
-        # if not, it stays unowned, same as every business created so far.
-        owner = auth_store.get_owner_for_session(lf_session)
-        if owner:
-            agent_context = {**agent_context, "owner_id": owner["ownerId"]}
+        agent_context = {**agent_context, "owner_id": owner["ownerId"]}
 
         # Initialize planner if not already done
         global json_planner
@@ -1487,8 +1500,10 @@ def auth_my_businesses(lf_session: str | None = Cookie(default=None)) -> dict[st
 async def run_critique(
     request: Request,
     payload: str | None = Form(default=None),
+    lf_session: str | None = Cookie(default=None),
 ) -> dict[str, Any]:
     """Run critique agents on generated code"""
+    _require_login(lf_session)
     parsed_payload = await extract_request_payload(request, payload)
     logger.info("Received run_critique request")
     logger.debug(f"Critique payload: {parsed_payload}")
@@ -1574,7 +1589,9 @@ async def extract_assets(
     request: Request,
     payload: str | None = Form(default=None),
     files: list[UploadFile] | None = File(default=None),
+    lf_session: str | None = Cookie(default=None),
 ) -> dict[str, Any]:
+    _require_login(lf_session)
     parsed_payload = await extract_request_payload(request, payload)
     logger.info("Received extract_assets request")
     logger.debug(f"Extract assets payload: {parsed_payload}")
