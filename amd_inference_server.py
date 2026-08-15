@@ -129,9 +129,26 @@ load_local_env()
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "").strip()
 CROSS_ORIGIN_DEPLOYMENT = bool(FRONTEND_ORIGIN)
 
+
+def _vercel_project_origin_regex(frontend_origin: str) -> str | None:
+    """Vercel serves one project under multiple legitimate origins -- the
+    stable production alias (what FRONTEND_ORIGIN is set to) plus a
+    git-branch alias and per-deployment aliases that share the same
+    project slug (e.g. https://my-project.vercel.app and
+    https://my-project-git-master-team.vercel.app both point at the same
+    project). Matching only the exact FRONTEND_ORIGIN string breaks CORS
+    the moment a visitor lands on any of those other real Vercel URLs --
+    which is exactly what happened (git-branch preview URL rejected)."""
+    match = re.match(r"^https://([a-z0-9-]+)\.vercel\.app$", frontend_origin)
+    if not match:
+        return None
+    return rf"^https://{re.escape(match.group(1))}(-[a-z0-9-]+)?\.vercel\.app$"
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[FRONTEND_ORIGIN] if CROSS_ORIGIN_DEPLOYMENT else ["http://127.0.0.1:8000", "http://localhost:8000"],
+    allow_origin_regex=_vercel_project_origin_regex(FRONTEND_ORIGIN) if CROSS_ORIGIN_DEPLOYMENT else None,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
