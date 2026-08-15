@@ -2059,7 +2059,12 @@ function selectBusiness(business) {
   if (generatedLinkWrap) generatedLinkWrap.hidden = !hasGeneratedAdmin;
   if (genericPanels) genericPanels.hidden = hasGeneratedAdmin;
   if (generatedLink) {
+    // href is a display-only fallback (e.g. hover preview / copy-link) --
+    // the actual click is intercepted below, since this needs a fresh
+    // token minted right before navigating, not a URL baked in ahead of
+    // time (see the click handler's comment for why).
     generatedLink.href = hasGeneratedAdmin ? apiUrl(`/businesses/${business.businessId}/admin`) : "#";
+    generatedLink.dataset.businessId = business.businessId;
   }
 
   if (!hasGeneratedAdmin) {
@@ -2067,6 +2072,33 @@ function selectBusiness(business) {
     renderMenuEditor();
   }
 }
+
+document.querySelector("#generatedAdminLink")?.addEventListener("click", async (event) => {
+  event.preventDefault();
+  const link = event.currentTarget;
+  const businessId = link.dataset.businessId;
+  if (!businessId) return;
+
+  // Open the tab synchronously (during the actual click) so browsers don't
+  // treat it as an unrequested popup -- the token fetch below is async, and
+  // window.open() called after an await routinely gets blocked.
+  const newTab = window.open("", "_blank");
+  if (newTab) newTab.document.write("Loading admin dashboard...");
+
+  try {
+    // A fresh token minted right now, not a URL baked in ahead of time: the
+    // session cookie is only visible to fetch() calls made from this page
+    // (Vercel) targeting the backend (Render) -- it's invisible on a direct
+    // top-level navigation to the backend's own origin, which is exactly
+    // what clicking this link does. See create_admin_view_token's docstring
+    // in amd_inference_server.py for the full explanation.
+    const result = await postJSON(`/businesses/${businessId}/admin-token`, {});
+    const url = `${apiUrl(`/businesses/${businessId}/admin`)}?token=${encodeURIComponent(result.token)}`;
+    if (newTab) newTab.location.href = url;
+  } catch (error) {
+    if (newTab) newTab.document.write(`Failed to open admin dashboard: ${error.message}`);
+  }
+});
 
 document.querySelector("#submitRevisionBtn")?.addEventListener("click", async () => {
   const input = document.querySelector("#revisionRequestInput");

@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 import logging
 import mimetypes
 import os
+import secrets
 import shutil
 import re
 import sys
+import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
@@ -70,6 +74,46 @@ def _require_login(lf_session: str | None) -> dict[str, Any]:
     if not owner:
         raise HTTPException(status_code=401, detail="Please log in before generating a business website.")
     return owner
+
+
+# Short-lived, single-business-scoped tokens for the "Open Admin Dashboard"
+# link. That link is a real top-level browser navigation directly to this
+# backend's own origin (needed so the admin page's own same-origin fetch()
+# calls work) -- but the session cookie was set while this origin was a
+# cross-origin fetch *target* from the Vercel frontend, and modern browsers
+# (Chrome's CHIPS, Firefox's Total Cookie Protection, Safari ITP) partition
+# that cookie under the frontend's top-level site, making it invisible on a
+# direct top-level visit to this origin. A regular session cookie can't
+# bridge that gap, so this mints a narrow, seconds-lived credential instead
+# of relying on it. Regenerated on every process start -- fine given tokens
+# are meant to be consumed within seconds of being minted, never persisted.
+_ADMIN_TOKEN_SECRET = secrets.token_bytes(32)
+_ADMIN_TOKEN_TTL_SECONDS = 60
+
+
+def _sign_admin_token(owner_id: str, business_id: str) -> str:
+    expires_at = int(time.time()) + _ADMIN_TOKEN_TTL_SECONDS
+    payload = f"{owner_id}:{business_id}:{expires_at}"
+    sig = hmac.new(_ADMIN_TOKEN_SECRET, payload.encode(), hashlib.sha256).hexdigest()
+    return base64.urlsafe_b64encode(f"{payload}:{sig}".encode()).decode()
+
+
+def _verify_admin_token(token: str, business_id: str) -> str | None:
+    """Returns the owner_id this token was minted for if it's valid,
+    unexpired, and scoped to this exact business_id -- otherwise None."""
+    try:
+        owner_id, biz_id, expires_at_str, sig = base64.urlsafe_b64decode(token.encode()).decode().split(":")
+    except Exception:
+        return None
+    if biz_id != business_id:
+        return None
+    payload = f"{owner_id}:{biz_id}:{expires_at_str}"
+    expected_sig = hmac.new(_ADMIN_TOKEN_SECRET, payload.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, expected_sig):
+        return None
+    if int(expires_at_str) < int(time.time()):
+        return None
+    return owner_id
 
 
 # Business/asset text routinely contains em-dashes, curly quotes, and other
@@ -1304,20 +1348,42 @@ def get_public_site(slug: str) -> HTMLResponse:
     return HTMLResponse(content=business["htmlPreview"])
 
 
+@app.post("/businesses/{business_id}/admin-token")
+def create_admin_view_token(
+    business_id: str,
+    lf_session: str | None = Cookie(default=None),
+) -> dict[str, Any]:
+    """Mints a ~60s, single-business-scoped token for the admin dashboard
+    link below -- called via credentialed fetch() from the frontend (where
+    the session cookie IS visible) right before opening the link, since the
+    cookie itself won't be visible on the subsequent direct top-level
+    navigation to this origin (see _sign_admin_token's docstring context)."""
+    owner = _require_login(lf_session)
+    business = get_business(business_id)
+    if not business or business.get("ownerId") != owner["ownerId"]:
+        raise HTTPException(status_code=404, detail="Business not found, or you don't own it")
+    return {"token": _sign_admin_token(owner["ownerId"], business_id)}
+
+
 @app.get("/businesses/{business_id}/admin")
 def get_business_admin_page(
     business_id: str,
     lf_session: str | None = Cookie(default=None),
+    token: str | None = None,
 ) -> HTMLResponse:
     """The LLM-generated owner dashboard -- unlike /site/{slug}, this is
     deliberately NOT public: it shows real customer data (names, contact
     info, submission history), so ownership is checked before anything is
-    returned, not just before an action is taken."""
+    returned, not just before an action is taken.
+
+    Accepts the session cookie (same-origin/local-dev case) OR a short-lived
+    admin-view token (cross-origin case, see create_admin_view_token)."""
     owner = auth_store.get_owner_for_session(lf_session)
-    if not owner:
+    owner_id = owner["ownerId"] if owner else (_verify_admin_token(token, business_id) if token else None)
+    if not owner_id:
         raise HTTPException(status_code=401, detail="Not logged in")
     business = get_business(business_id)
-    if not business or business.get("ownerId") != owner["ownerId"]:
+    if not business or business.get("ownerId") != owner_id:
         raise HTTPException(status_code=404, detail="Business not found, or you don't own it")
     if not business.get("adminHtmlPreview"):
         raise HTTPException(status_code=404, detail="No generated admin dashboard yet for this business")
