@@ -2040,7 +2040,7 @@ function selectBusiness(business) {
   if (nameEl) nameEl.textContent = business.name;
   const linkEl = document.querySelector("#dashboardBusinessLink");
   if (linkEl) {
-    const url = `${window.location.origin}/site/${business.slug}`;
+    const url = apiUrl(`/site/${business.slug}`);
     linkEl.textContent = url;
     linkEl.href = url;
   }
@@ -2059,7 +2059,7 @@ function selectBusiness(business) {
   if (generatedLinkWrap) generatedLinkWrap.hidden = !hasGeneratedAdmin;
   if (genericPanels) genericPanels.hidden = hasGeneratedAdmin;
   if (generatedLink) {
-    generatedLink.href = hasGeneratedAdmin ? `/businesses/${business.businessId}/admin` : "#";
+    generatedLink.href = hasGeneratedAdmin ? apiUrl(`/businesses/${business.businessId}/admin`) : "#";
   }
 
   if (!hasGeneratedAdmin) {
@@ -4471,7 +4471,7 @@ function renderGeneratedCode(result) {
 
   const previewHtml = generated?.html_preview || "";
   const siteSlug = generated?.config?.siteSlug || "";
-  const siteUrl = siteSlug ? `${window.location.origin}/site/${siteSlug}` : "";
+  const siteUrl = siteSlug ? apiUrl(`/site/${siteSlug}`) : "";
   const liveLinkBlock = siteUrl
     ? `<p class="muted" style="margin-bottom:.75rem;">
         Live customer site: <a href="${escapeHtml(siteUrl)}" target="_blank" rel="noopener">${escapeHtml(siteUrl)}</a>
