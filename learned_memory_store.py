@@ -60,6 +60,10 @@ def _init_db(conn: psycopg.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_learned_memories_vertical ON learned_memories(vertical)"
     )
+    # Supabase's separate auto-exposed REST API must never be able to read
+    # this -- our app only ever connects here directly as the table-owning
+    # role, which bypasses RLS regardless.
+    conn.execute("ALTER TABLE learned_memories ENABLE ROW LEVEL SECURITY")
 
 
 @contextmanager

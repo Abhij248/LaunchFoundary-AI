@@ -51,6 +51,12 @@ def _init_auth_tables(conn: psycopg.Connection) -> None:
         )
         """
     )
+    # These two tables hold password hashes and live session tokens --
+    # Supabase's separate auto-exposed REST API must never be able to read
+    # them. Our app only ever connects here directly as the table-owning
+    # role (which bypasses RLS), so this costs us nothing.
+    conn.execute("ALTER TABLE owners ENABLE ROW LEVEL SECURITY")
+    conn.execute("ALTER TABLE sessions ENABLE ROW LEVEL SECURITY")
 
 
 @contextmanager

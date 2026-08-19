@@ -63,6 +63,11 @@ def _init_db(conn: psycopg.Connection) -> None:
         )
         """
     )
+    # Supabase's separate auto-exposed REST API must never be able to
+    # read/write these -- our app only ever connects here directly as the
+    # table-owning role, which bypasses RLS regardless.
+    conn.execute("ALTER TABLE custom_entities ENABLE ROW LEVEL SECURITY")
+    conn.execute("ALTER TABLE resource_claims ENABLE ROW LEVEL SECURITY")
 
 
 @contextmanager

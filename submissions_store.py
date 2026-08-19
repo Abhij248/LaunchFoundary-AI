@@ -51,6 +51,10 @@ def _init_db(conn: psycopg.Connection) -> None:
     # creation means a stray one survives visibly (not silently masquerading
     # as a real order) if cleanup itself fails.
     conn.execute("ALTER TABLE submissions ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'customer'")
+    # Real customer names/phone numbers/emails -- Supabase's separate
+    # auto-exposed REST API must never be able to read them. Our app only
+    # ever connects here directly as the table-owning role (bypasses RLS).
+    conn.execute("ALTER TABLE submissions ENABLE ROW LEVEL SECURITY")
 
 
 @contextmanager

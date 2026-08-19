@@ -69,6 +69,14 @@ def _init_db(conn: psycopg.Connection) -> None:
     # produces one; the frontend falls back to the hand-coded generic
     # panel when this is empty, never shows a blank page.
     conn.execute("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS admin_html_preview TEXT DEFAULT ''")
+    # Supabase auto-exposes every public-schema table via a separate REST
+    # API (PostgREST) unless RLS is on -- our app never uses that API (it
+    # only ever connects here directly as the table-owning role, which
+    # bypasses RLS regardless), so enabling it with zero policies just
+    # closes off that other, unintended access path at no cost to us.
+    conn.execute("ALTER TABLE menu_items ENABLE ROW LEVEL SECURITY")
+    conn.execute("ALTER TABLE business_meta ENABLE ROW LEVEL SECURITY")
+    conn.execute("ALTER TABLE businesses ENABLE ROW LEVEL SECURITY")
 
 
 @contextmanager
