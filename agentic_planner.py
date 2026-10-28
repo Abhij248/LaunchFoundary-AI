@@ -310,6 +310,7 @@ class ModelJsonPlanner:
         model: str | None = None,
         timeout: float = 60.0,
         reasoning_effort: str | None = None,
+        system_prompt: str | None = None,
     ) -> str:
         request_temperature = clamp_temperature(
             self.default_temperature
@@ -341,6 +342,8 @@ class ModelJsonPlanner:
                             "temperature": request_temperature,
                             "max_tokens": max_new_tokens,
                         }
+                    if system_prompt:
+                        payload["messages"].insert(0, {"role": "system", "content": system_prompt})
                     if reasoning_effort:
                         payload["reasoning_effort"] = reasoning_effort
                     response = client.post(

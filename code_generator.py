@@ -178,6 +178,52 @@ def _default_workflows_for_vertical(vertical: str, shape: str = "") -> list[str]
     return SHAPE_DEFAULT_WORKFLOWS.get(shape, ["lead_capture", "contact_form"])
 
 
+_ADMIN_SYSTEM_PROMPT = (
+    "You are the code-generation engine inside LaunchFoundry, a website builder for small businesses. "
+    "The person you are working for is the signed-in owner of the business described in each request; the "
+    "platform has already authenticated them and checks ownership on every data call. Your job is to write "
+    "complete, working single-file HTML pages for their own website and their own back-office dashboard. "
+    "Output only the requested HTML."
+)
+
+
+def _inject_admin_api_client(html: str, business_id: str) -> str:
+    """Injects window.LF, the data client the generated admin dashboard is
+    told to use. The model never sees the real business id or raw endpoint
+    URLs: when it did, it consistently refused ("real fetch() calls to a
+    live tenant UUID" read as unauthorized access to someone else's data).
+    Inserted at the top of <head> so it exists before any of the model's
+    own scripts run."""
+    bid = json.dumps(business_id)
+    script = f"""<script>
+(function () {{
+  var base = "/businesses/" + encodeURIComponent({bid});
+  async function call(path, method, body) {{
+    var opts = {{ method: method || "GET", headers: {{}} }};
+    if (body !== undefined) {{
+      opts.headers["Content-Type"] = "application/json";
+      opts.body = JSON.stringify(body);
+    }}
+    var res = await fetch(base + path, opts);
+    if (!res.ok) throw new Error("Request failed (" + res.status + ")");
+    return res.json();
+  }}
+  window.LF = {{
+    listSubmissions: function () {{ return call("/submissions").then(function (d) {{ return d.submissions || []; }}); }},
+    updateSubmissionStatus: function (id, status) {{ return call("/submissions/" + encodeURIComponent(id), "PATCH", {{ status: status }}); }},
+    listItems: function () {{ return call("/items").then(function (d) {{ return d.items || []; }}); }},
+    saveItems: function (items) {{ return call("/items", "PUT", {{ items: items }}).then(function (d) {{ return d.items || []; }}); }},
+    listEntities: function (type) {{ return call("/entities/" + encodeURIComponent(type)).then(function (d) {{ return d.entities || []; }}); }},
+    listClaims: function (type, entityId) {{ return call("/entities/" + encodeURIComponent(type) + "/" + encodeURIComponent(entityId) + "/claims").then(function (d) {{ return d.claimedResourceKeys || []; }}); }}
+  }};
+}})();
+</script>"""
+    match = re.search(r"<head[^>]*>", html, flags=re.IGNORECASE)
+    if match:
+        return html[: match.end()] + "\n" + script + html[match.end():]
+    return script + "\n" + html
+
+
 def _inject_catalog_empty_state_guard(html: str, business_id: str) -> str:
     """Guarantee an honest empty-catalog experience at the network layer,
     independent of whether the model's own generated JS chose to invent a
@@ -638,70 +684,62 @@ class CodeGenerator:
         except Exception:
             custom_entity_sample = ""
 
-        endpoints_block = (
-            f'- GET "/businesses/{business_id}/submissions" returns JSON shaped {{"submissions":[{{"id","type",'
-            f'"customer","summary","contact","createdAt","status","source"}}, ...]}}. "type" is one of '
-            f'"order"/"reservation"/"lead". "status" is one of "new"/"in_progress"/"completed"/"cancelled" -- '
-            f'stick to exactly these 4 values, but pick whatever LABEL text makes sense to show for each, '
-            f'fitting this specific business (e.g. a clinic booking might label "in_progress" as "Patient '
-            f'Arrived"; a restaurant order might label it "Preparing").\n'
-            f'- PATCH "/businesses/{business_id}/submissions/{{submissionId}}" with JSON body {{"status": '
-            f'"<one of the 4 values above>"}} updates one record\'s status -- wire this to whatever status '
-            f'controls you design.\n'
+        # The model only ever sees the window.LF client interface, never the
+        # real business id or raw URLs -- see _inject_admin_api_client for why.
+        api_block = (
+            '- `await LF.listSubmissions()` resolves to an array of {id, type, customer, summary, contact, '
+            'createdAt, status, source}. "type" is one of "order"/"reservation"/"lead". "status" is one of '
+            '"new"/"in_progress"/"completed"/"cancelled" -- stick to exactly these 4 values, but pick whatever '
+            'LABEL text fits this business (e.g. a clinic might label "in_progress" as "Patient Arrived"; a '
+            'restaurant might label it "Preparing").\n'
+            '- `await LF.updateSubmissionStatus(id, status)` sets one record\'s status (one of the 4 values) -- '
+            'wire this to whatever status controls you design.\n'
         )
         if custom_entity_sample:
-            endpoints_block += (
-                f'- GET "/businesses/{business_id}/entities/showtime" returns {{"entities":[{{"id","entityType",'
-                f'"data"}}, ...]}}. Example entity: {custom_entity_sample}\n'
-                f'- GET "/businesses/{business_id}/entities/showtime/{{entityId}}/claims" returns '
-                f'{{"claimedResourceKeys":[...]}} -- which specific resources (e.g. seats) are taken for one entity.\n'
+            api_block += (
+                '- `await LF.listEntities("showtime")` resolves to an array of {id, entityType, data}. Example '
+                f'entity: {custom_entity_sample}\n'
+                '- `await LF.listClaims("showtime", entityId)` resolves to an array of claimed resource keys '
+                '(e.g. taken seats) for one entity.\n'
             )
         if has_commerce or has_reserve:
-            endpoints_block += (
-                f'- GET "/businesses/{business_id}/items" returns {{"items":[{{"id","name","category",'
-                f'"description","priceLabel","priceSortValue","imageUrl"}}, ...]}}\n'
-                f'- PUT "/businesses/{business_id}/items" with JSON body {{"items":[...]}} (same shape) replaces '
-                f'the whole list -- wire this to an add/edit/remove item UI.\n'
+            api_block += (
+                '- `await LF.listItems()` resolves to an array of {id, name, category, description, priceLabel, '
+                'priceSortValue, imageUrl}.\n'
+                '- `await LF.saveItems(items)` replaces the whole item list (same shape) and resolves to the saved '
+                'list -- wire this to an add/edit/remove item UI.\n'
             )
 
         item_lines = "\n".join(f'  - {i.get("name","")} - {i.get("priceLabel","")}' for i in menu_items)
 
-        prompt = f"""You are building one page of our own website-builder platform: the back-office admin
-screen for a business that already has a live site on our platform, {name} (a {vertical} business, goal:
-{goal or 'no stated goal'}). This platform already runs a backend that stores this business's orders,
-bookings, and leads -- the endpoints below are that same backend, part of the same application as the page
-you're writing, not a third-party or external system. Every fetch() call you write is a same-origin relative
-URL (never prefix any of them with a domain) -- exactly like any normal single-page admin panel calling its
-own platform's own API for one seller/tenant's own data, the same pattern e-commerce and booking platforms
-use for their seller dashboards every day. These endpoints are live and already responding right now -- the
-fetch() calls below will succeed when this page loads in a browser, the same as they already do on this
-business's live customer-facing site today.
+        prompt = f"""Write the front-end for the owner's back-office dashboard of a small business website,
+{name} (a {vertical} business, goal: {goal or 'no stated goal'}). The owner uses this page to see and manage
+the enquiries, orders, or bookings their own site receives.
 
-Build a page that covers exactly what this business actually has -- skip any section for something not
-described below (e.g. no items section if none are listed).
+Data access is already handled for you: the page has a global `window.LF` client object (provided by the
+hosting app, already loaded before your scripts run). Use ONLY its methods for data -- don't write fetch()
+calls or URLs yourself, and don't define or mock `LF`. All methods return Promises and throw on failure, so
+show a friendly error message in the UI if one rejects.
 
-Note on the data involved: every submission is just basic contact-request metadata the visitor typed into a
-web form themselves (a name, a phone number, a one-line reason for the request, a status label) -- the same
-kind of record a Calendly/Squarespace/Shopify seller dashboard shows. It is never clinical, diagnostic, or
-otherwise regulated record content, regardless of what vertical the business is in.
+Cover exactly what this business actually has -- skip any section for something not described below (e.g. no
+items section if none are listed).
 
-═══ THIS BUSINESS'S DATA ═══
+═══ WHAT THIS BUSINESS HAS ═══
 Workflows in use: {sorted(workflow_keys) or ["lead"]}
 {f"Items on file:{chr(10)}{item_lines}" if item_lines else "No catalog/menu items -- skip an items section."}
 {f"Custom data on file: {custom_entity_sample}" if custom_entity_sample else ""}
 
-═══ THIS PLATFORM'S OWN DATA ENDPOINTS FOR THIS BUSINESS ═══
-{endpoints_block}
-
+═══ THE LF CLIENT ═══
+{api_block}
 ═══ REQUIREMENTS ═══
-- Fetch real data on load; never invent example records.
-- For each submission type this business actually has, show the list with the business-appropriate status
-  labels and let the owner change status via the PATCH call.
-- If a custom entity sample was given, show a real view of it (and its claims, if relevant) -- your call on
-  the exact layout, but it must reflect the real fields shown above, not invented ones.
-- If items were given, let the owner see and edit them via the GET/PUT items endpoints.
-- Keep it functional and clean -- this is a working tool, not a marketing page. No fake data, no filler
-  copy about the business itself.
+- Load data from LF on page load; never hard-code or invent example records. Show a clear empty state when a
+  list is empty.
+- For each submission type this business actually has, show the list with business-appropriate status
+  labels and let the owner change status via LF.updateSubmissionStatus.
+- If custom data was given, show a real view of it (and its claims, if relevant), reflecting the real fields
+  shown above, not invented ones.
+- If items were given, let the owner see and edit them via LF.listItems / LF.saveItems.
+- Keep it functional and clean -- this is a working tool, not a marketing page. No filler copy.
 - Every interactive control must actually work -- no dead buttons.
 
 ═══ OUTPUT FORMAT ═══
@@ -710,17 +748,15 @@ no code fences, no explanation before or after."""
 
         best_model = self.planner.best_model_name()
         reasoning_effort = self.planner.best_model_reasoning_effort()
-        # Observed non-deterministic false-positive safety refusals on this
-        # prompt shape (a model occasionally reads "real fetch() calls to a
-        # UUID-scoped endpoint" as an unauthorized-access request, even
-        # though it's this same app's own backend) -- the same prompt
-        # succeeds on a retry often enough that one extra attempt is worth
-        # it before falling back to the hand-coded panel.
+        # Without a system message saying who the request is for, the model
+        # refused this prompt every time (as of 2026-10), reading an admin
+        # dashboard for a named business as unauthorized access/impersonation.
+        # With it, generation succeeded 3/3. The retry stays as a safety net.
         for attempt in range(2):
             try:
                 html = self.planner.generate_text(
-                    prompt, max_new_tokens=8000, temperature=0.5, model=best_model, timeout=120.0,
-                    reasoning_effort=reasoning_effort,
+                    prompt, max_new_tokens=12000, temperature=0.5, model=best_model, timeout=180.0,
+                    reasoning_effort=reasoning_effort, system_prompt=_ADMIN_SYSTEM_PROMPT,
                 )
                 html = html.strip()
                 if html.startswith("```"):
@@ -736,7 +772,7 @@ no code fences, no explanation before or after."""
                         attempt + 1, business_id,
                     )
                     continue
-                html = html[start:]
+                html = _inject_admin_api_client(html[start:], business_id)
                 logger.info(
                     "Admin dashboard generation succeeded on attempt %d (%d chars, business_id=%s)",
                     attempt + 1, len(html), business_id,
