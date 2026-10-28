@@ -4723,8 +4723,11 @@ async function runCodeGenerationStep() {
   }
 }
 
-document.querySelector("#generationRetryBtn")?.addEventListener("click", () => {
-  runCodeGenerationStep();
+document.querySelector("#generationRetryBtn")?.addEventListener("click", async () => {
+  const ok = await runCodeGenerationStep();
+  if (ok && state.owner && state.businessId) {
+    await enterDashboardMode(state.businessId);
+  }
 });
 
 async function runProductionPipeline() {
@@ -4748,7 +4751,7 @@ async function runProductionPipeline() {
   }
 
   // 2. Code Generation
-  await runCodeGenerationStep();
+  const codeGenerated = await runCodeGenerationStep();
 
   // 3. Critique & Debate
   const generatedSource =
@@ -4784,7 +4787,13 @@ async function runProductionPipeline() {
 
   // The wizard is a one-time "create your business" flow -- once it
   // finishes, hand off into the persistent owner dashboard rather than
-  // leaving the user parked on the QA step.
+  // leaving the user parked on the QA step. If generation failed, stay on
+  // the reasoning panel instead: that's where the error banner + Retry
+  // button live, and the dashboard would just be empty for this business.
+  if (!codeGenerated) {
+    showPanel("reasoning");
+    return;
+  }
   if (state.owner && state.businessId) {
     await enterDashboardMode(state.businessId);
   }
