@@ -15,6 +15,8 @@ Every site is written from scratch by an LLM. There is no template picker. The s
 
 **Live demo:** https://launch-foundary-ai-twrl.vercel.app (sign up with any email to try it)
 
+> **Note:** The demo's database runs on Supabase's free tier, which automatically pauses projects after a period of inactivity. If the demo shows errors or won't load your data, the database has probably been paused. I restart it whenever this happens, so please try again a little later. You can also run the project locally with your own database (see [Running locally](#running-locally)).
+
 ---
 
 ## Contents
