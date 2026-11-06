@@ -136,7 +136,6 @@ flowchart TD
 **Loop safety:**
 - Every loop has a visit cap (requirements ≤ 3, strategy ≤ 3, critique ≤ 4, design revision iterations ≤ 3).
 - The streaming runner stops after 60 updates, or when the same state signature repeats 4 times.
-- If the graph fails, a fallback execution still returns a usable result, so the owner is never left with nothing.
 
 ---
 
