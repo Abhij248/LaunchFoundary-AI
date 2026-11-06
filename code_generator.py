@@ -1379,7 +1379,10 @@ Design mood for this business: "{mood}" — {mood_desc}.
 
         import browser_smoke_test
 
-        base_url = os.getenv("SMOKE_TEST_BASE_URL", "http://127.0.0.1:8000")
+        # Defaults to this same server on whatever port it is listening on.
+        # Render sets PORT (10000), so a hard-coded 8000 made every test fail
+        # to connect, which the test treats as inconclusive and skips silently.
+        base_url = os.getenv("SMOKE_TEST_BASE_URL") or f"http://127.0.0.1:{os.getenv('PORT', '8000')}"
         business_name = build_spec.get("business", {}).get("name", "this business")
 
         tier1 = browser_smoke_test.run_reachability_check(base_url, site_slug)

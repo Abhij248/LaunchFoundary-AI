@@ -259,7 +259,7 @@ Open http://localhost:8000. Locally, the backend serves the frontend itself, so 
 | `XAI_TEXT_MODEL` / `XAI_BEST_MODEL` / `XAI_VISION_MODEL` | | Per-role model overrides |
 | `ENABLE_LIVE_WEB_TOOLS` | | Live web search for agents (default on) |
 | `ENABLE_SMOKE_TEST_TIER1` / `ENABLE_SMOKE_TEST_TIER2` | | Browser tests (Tier 1 default on, Tier 2 default off) |
-| `SMOKE_TEST_BASE_URL` | | Where the browser tests reach the running app (default `http://127.0.0.1:8000`) |
+| `SMOKE_TEST_BASE_URL` | | Where the browser tests reach the running app (default: this server, on `$PORT` or 8000) |
 
 ---
 
@@ -268,7 +268,7 @@ Open http://localhost:8000. Locally, the backend serves the frontend itself, so 
 These are known trade-offs and gaps, listed so reviewers don't have to find them:
 
 - **There's no rate limiting.** Public customer endpoints (submitting an order or enquiry, claiming a seat) have no per-IP limits yet.
-- **Generation runs inside the HTTP request.** A full generation (model call, browser tests, repair, dashboard) can take minutes. A job queue would be the next step.
+- **Generation runs inside the HTTP request.** It runs in a worker thread, so the server stays responsive, but a full generation (model call, browser tests, repair, dashboard) can still keep one request open for minutes. A job queue would be the next step.
 - **Uploaded item photos are stored on the container's disk**, so they don't survive a redeploy. They should move to object storage (such as Supabase Storage).
 - **The admin-token signing key is per process.** A server restart signs open dashboards out (the owner just reopens the dashboard from the builder), and the key needs to be a shared secret before running more than one instance.
 - **The catalog editor saves the whole item list at once**, not per item. That's fine for a single owner, but not for concurrent editors.

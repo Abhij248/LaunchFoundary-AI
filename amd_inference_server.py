@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -1229,7 +1230,14 @@ async def generate_code(
         code_orchestrator = CodeGenerationOrchestrator(json_planner)
 
         # Generate website code
-        generated_code = code_orchestrator.generate_website(build_spec, agent_context=agent_context)
+        # Runs in a worker thread, not on the event loop: generation takes
+        # minutes of blocking LLM calls (which would stall every other
+        # request), and its browser smoke test uses Playwright's sync API,
+        # which refuses to run inside an asyncio loop and needs this server
+        # free to serve the /site/{slug} page it is testing.
+        generated_code = await asyncio.to_thread(
+            code_orchestrator.generate_website, build_spec, agent_context=agent_context
+        )
 
         if generated_code.generation_failed:
             logger.warning(
@@ -1500,13 +1508,15 @@ async def revise_business_site(business_id: str, request: Request) -> dict[str, 
     # doesn't produce a usable result (still gated the same way either way),
     # and keeps the old live page if neither passes -- this only adds a
     # cheaper first attempt, it never makes a revision less likely to work.
-    revised_html = generator.revise_html_with_targeted_edit(
-        build_spec, current_html, revision_request
+    # Worker thread for the same reason as /generate-code: blocking LLM calls.
+    revised_html = await asyncio.to_thread(
+        generator.revise_html_with_targeted_edit, build_spec, current_html, revision_request
     )
     used_targeted_edit = bool(revised_html)
     if not _passes_gate(revised_html):
-        revised_html = generator.generate_html_with_llm(
-            build_spec, {}, revision_request=revision_request, current_html=current_html
+        revised_html = await asyncio.to_thread(
+            generator.generate_html_with_llm,
+            build_spec, {}, revision_request=revision_request, current_html=current_html,
         )
         used_targeted_edit = False
 
