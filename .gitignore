@@ -6,3 +6,6 @@ __pycache__/
 debug.log*
 server_out.txt
 server_err.txt
+
+# Local tooling, never part of the app
+aider-env/
