@@ -90,9 +90,18 @@ def _require_login(lf_session: str | None) -> dict[str, Any]:
 _ADMIN_TOKEN_SECRET = secrets.token_bytes(32)
 _ADMIN_TOKEN_TTL_SECONDS = 60
 
+# Once the admin page loads, its own same-origin fetch() calls (submissions,
+# items) also need to prove ownership, and the session cookie is still
+# invisible there for the same partitioning reason. So the admin page
+# response sets this first-party cookie, signed the same way and scoped by
+# Path to this one business -- it is only ever sent back to
+# /businesses/{business_id}/... on this origin.
+ADMIN_COOKIE_NAME = "lf_admin"
+_ADMIN_COOKIE_TTL_SECONDS = 8 * 60 * 60
 
-def _sign_admin_token(owner_id: str, business_id: str) -> str:
-    expires_at = int(time.time()) + _ADMIN_TOKEN_TTL_SECONDS
+
+def _sign_admin_token(owner_id: str, business_id: str, ttl_seconds: int = _ADMIN_TOKEN_TTL_SECONDS) -> str:
+    expires_at = int(time.time()) + ttl_seconds
     payload = f"{owner_id}:{business_id}:{expires_at}"
     sig = hmac.new(_ADMIN_TOKEN_SECRET, payload.encode(), hashlib.sha256).hexdigest()
     return base64.urlsafe_b64encode(f"{payload}:{sig}".encode()).decode()
@@ -114,6 +123,30 @@ def _verify_admin_token(token: str, business_id: str) -> str | None:
     if int(expires_at_str) < int(time.time()):
         return None
     return owner_id
+
+
+def _require_business_owner(request: Request, business_id: str) -> str:
+    """Owner-only business endpoints (editing items, reading/updating
+    customer submissions, revisions). Accepts the session cookie (the builder
+    app's credentialed fetches) or the business-scoped admin cookie (the
+    generated admin dashboard's own same-origin fetches). Returns the owner id;
+    401 if neither proves a login, 404 if the caller doesn't own this business
+    (same answer as "doesn't exist", so ids can't be probed)."""
+    candidate_owner_ids = []
+    session_owner = auth_store.get_owner_for_session(request.cookies.get(SESSION_COOKIE_NAME))
+    if session_owner:
+        candidate_owner_ids.append(session_owner["ownerId"])
+    admin_cookie = request.cookies.get(ADMIN_COOKIE_NAME)
+    if admin_cookie:
+        token_owner_id = _verify_admin_token(admin_cookie, business_id)
+        if token_owner_id:
+            candidate_owner_ids.append(token_owner_id)
+    if not candidate_owner_ids:
+        raise HTTPException(status_code=401, detail="Please log in to manage this business.")
+    business = get_business(business_id)
+    if not business or business.get("ownerId") not in candidate_owner_ids:
+        raise HTTPException(status_code=404, detail="Business not found, or you don't own it")
+    return business["ownerId"]
 
 
 # Business/asset text routinely contains em-dashes, curly quotes, and other
@@ -1172,6 +1205,18 @@ async def generate_code(
         if not build_spec:
             raise HTTPException(status_code=400, detail="buildSpec is required")
 
+        # The business id comes from the client, so make sure it isn't someone
+        # else's: regenerating would replace their live site with this one.
+        requested_business_id = str((build_spec.get("business") or {}).get("id") or "")
+        if requested_business_id:
+            existing_business = get_business(requested_business_id)
+            if (
+                existing_business
+                and existing_business.get("ownerId")
+                and existing_business["ownerId"] != owner["ownerId"]
+            ):
+                raise HTTPException(status_code=404, detail="Business not found, or you don't own it")
+
         agent_context = parsed_payload.get("agentContext") or {}
         agent_context = {**agent_context, "owner_id": owner["ownerId"]}
 
@@ -1229,6 +1274,7 @@ def get_business_items(business_id: str) -> dict[str, Any]:
 @app.put("/businesses/{business_id}/items")
 async def put_business_items(business_id: str, request: Request) -> dict[str, Any]:
     """Whole-list replace -- the owner's menu editor saves the entire array at once."""
+    _require_business_owner(request, business_id)
     payload = await request.json()
     items = payload.get("items", [])
     if not isinstance(items, list):
@@ -1307,7 +1353,9 @@ def _safe_path_component(value: str, fallback: str) -> str:
 
 
 @app.post("/businesses/{business_id}/items/image")
-async def upload_item_image(business_id: str, item_id: str, file: UploadFile = File(...)) -> dict[str, Any]:
+async def upload_item_image(
+    business_id: str, item_id: str, request: Request, file: UploadFile = File(...)
+) -> dict[str, Any]:
     """Owner uploads a real photo for one catalog/menu item -- this is an
     admin-dashboard capability, distinct from anything the LLM generates for
     the public site. The generated page just renders whatever imageUrl this
@@ -1317,6 +1365,7 @@ async def upload_item_image(business_id: str, item_id: str, file: UploadFile = F
     strings that can contain slashes/spaces/punctuation (same reason the
     generated pages are told to pass them via data-id, never splice them
     into a URL path directly)."""
+    _require_business_owner(request, business_id)
     content_type = (file.content_type or "").lower()
     ext = _ITEM_IMAGE_CONTENT_TYPES.get(content_type)
     if not ext:
@@ -1368,7 +1417,7 @@ def create_admin_view_token(
 @app.get("/businesses/{business_id}/admin")
 def get_business_admin_page(
     business_id: str,
-    lf_session: str | None = Cookie(default=None),
+    request: Request,
     token: str | None = None,
 ) -> HTMLResponse:
     """The LLM-generated owner dashboard -- unlike /site/{slug}, this is
@@ -1376,10 +1425,16 @@ def get_business_admin_page(
     info, submission history), so ownership is checked before anything is
     returned, not just before an action is taken.
 
-    Accepts the session cookie (same-origin/local-dev case) OR a short-lived
-    admin-view token (cross-origin case, see create_admin_view_token)."""
-    owner = auth_store.get_owner_for_session(lf_session)
-    owner_id = owner["ownerId"] if owner else (_verify_admin_token(token, business_id) if token else None)
+    Accepts the session cookie (same-origin/local-dev case), a short-lived
+    admin-view token in the URL (cross-origin case, see
+    create_admin_view_token), or the business-scoped admin cookie set below
+    (so a page refresh keeps working after the URL token expires)."""
+    owner = auth_store.get_owner_for_session(request.cookies.get(SESSION_COOKIE_NAME))
+    owner_id = owner["ownerId"] if owner else None
+    if not owner_id and token:
+        owner_id = _verify_admin_token(token, business_id)
+    if not owner_id and request.cookies.get(ADMIN_COOKIE_NAME):
+        owner_id = _verify_admin_token(request.cookies[ADMIN_COOKIE_NAME], business_id)
     if not owner_id:
         raise HTTPException(status_code=401, detail="Not logged in")
     business = get_business(business_id)
@@ -1387,7 +1442,17 @@ def get_business_admin_page(
         raise HTTPException(status_code=404, detail="Business not found, or you don't own it")
     if not business.get("adminHtmlPreview"):
         raise HTTPException(status_code=404, detail="No generated admin dashboard yet for this business")
-    return HTMLResponse(content=business["adminHtmlPreview"])
+    response = HTMLResponse(content=business["adminHtmlPreview"])
+    response.set_cookie(
+        ADMIN_COOKIE_NAME,
+        _sign_admin_token(owner_id, business_id, ttl_seconds=_ADMIN_COOKIE_TTL_SECONDS),
+        max_age=_ADMIN_COOKIE_TTL_SECONDS,
+        path=f"/businesses/{business_id}",
+        httponly=True,
+        secure=CROSS_ORIGIN_DEPLOYMENT,
+        samesite="lax",
+    )
+    return response
 
 
 @app.post("/businesses/{business_id}/revise")
@@ -1398,6 +1463,7 @@ async def revise_business_site(business_id: str, request: Request) -> dict[str, 
     get everything right (missing integration hooks, mixed-up sections,
     etc.) -- this is the correction mechanism for that, triggered by the
     owner instead of guessed at automatically."""
+    _require_business_owner(request, business_id)
     payload = await request.json()
     revision_request = (payload.get("revisionRequest") or "").strip()
     if not revision_request:
@@ -1499,7 +1565,9 @@ async def post_submission(business_id: str, request: Request) -> dict[str, Any]:
 
 
 @app.get("/businesses/{business_id}/submissions")
-def get_submissions(business_id: str) -> dict[str, Any]:
+def get_submissions(business_id: str, request: Request) -> dict[str, Any]:
+    """Owner-only: these are real customers' names and contact details."""
+    _require_business_owner(request, business_id)
     return {"submissions": list_submissions(business_id)}
 
 
@@ -1509,6 +1577,7 @@ async def patch_submission_status(business_id: str, submission_id: str, request:
     cancelled from the admin dashboard -- this is admin-dashboard code (this
     app's own app.js), not something a 'Request a Fix' on the generated site
     could ever reach."""
+    _require_business_owner(request, business_id)
     payload = await request.json()
     status = payload.get("status", "")
     if status not in submissions_store.VALID_STATUSES:
