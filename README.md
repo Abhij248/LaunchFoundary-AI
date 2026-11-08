@@ -15,7 +15,11 @@ Every site is written from scratch by an LLM. There is no template picker. The s
 
 **Live demo:** https://launch-foundary-ai-twrl.vercel.app (sign up with any email to try it)
 
-> **Note:** The demo's database runs on Supabase's free tier, which automatically pauses projects after a period of inactivity. If the demo shows errors or won't load your data, the database has probably been paused. I restart it whenever this happens, so please try again a little later. You can also run the project locally with your own database (see [Running locally](#running-locally)). THE PROCESSING SPEED IS SLOW BECAUSE BACKEND IS HOSTED ON FREE TEIR RENDER CLOUD SERVICE SO PROCESSES MAY TAKE A FEW MINUTES, RECOMMEND TO REFRESH PAGE WHEN LOOKING FOR UPDATES.
+> **Note:** The demo runs on free-tier hosting, so please expect some delays:
+> - **Database (Supabase free tier):** paused automatically after a period of inactivity. If the demo shows errors or won't load your data, the database has probably been paused. I restart it whenever this happens, so please try again a little later.
+> - **Backend (Render free tier):** the server sleeps after about 15 minutes without traffic, so the first request can take around a minute to wake it. It also has limited CPU, so generating a business can take a few minutes. If a step seems stuck, refresh the page to see the latest progress.
+>
+> You can also run the project locally with your own database (see [Running locally](#running-locally)).
 
 ---
 
@@ -45,7 +49,7 @@ flowchart LR
 
     subgraph Render["Render (Docker: FastAPI + Playwright)"]
         API["amd_inference_server.py<br/>FastAPI routes"]
-        BS["buildspec_planner.py<br/>deterministic planner"]
+        BS["buildspec_planner.py<br/>interaction rules<br/>(cart / reserve / seats)"]
         G["agentic_graph.py<br/>LangGraph reasoning graph"]
         R["research_agents.py<br/>web research agents"]
         CG["code_generator.py<br/>site + dashboard generation"]
@@ -225,7 +229,7 @@ The admin dashboard opens as a top-level page on the backend's own domain, where
 | Area | Files |
 |---|---|
 | **API server** | `amd_inference_server.py`: every route, SSE streaming, CORS, auth wiring |
-| **Planning** | `buildspec_planner.py` (deterministic BuildSpec) · `agentic_graph.py` (LangGraph graph) · `agentic_models.py` (state and schemas) · `agentic_memory.py` · `agentic_cognition_tools.py` · `cognitive_state_api.py` |
+| **Planning** | `agentic_graph.py` (LangGraph graph, the main planner) · `buildspec_planner.py` (rule-based interaction picker) · `agentic_models.py` (state and schemas) · `agentic_memory.py` · `agentic_cognition_tools.py` · `cognitive_state_api.py` |
 | **Behavioral layer** | `business_archetype_mapper.py`, `behavioral_rulebooks.py`, `behavioral_requirements.py`, `behavioral_planning.py`, `behavioral_blending.py`, `behavioral_validator.py`: map a business to archetypes (such as `fast_impulse_conversion` or `high_trust_consideration`) and check that designs stay consistent with them |
 | **LLM and tools** | `agentic_planner.py` (provider layer: JSON, text, vision, tool-calling loops, retries, health) · `agentic_external_tools.py` (web search and page reading) |
 | **Agents** | `research_agents.py` · `critique_system.py` · `deployment_system.py` |
