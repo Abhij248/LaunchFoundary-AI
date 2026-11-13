@@ -178,6 +178,29 @@ def _default_workflows_for_vertical(vertical: str, shape: str = "") -> list[str]
     return SHAPE_DEFAULT_WORKFLOWS.get(shape, ["lead_capture", "contact_form"])
 
 
+def _describe_business_type(business: dict[str, Any], agent_context: dict[str, Any] | None = None) -> str:
+    """Business type as written into generation prompts -- descriptive text only.
+
+    Prefers the planning graph's LLM business profile (subtype, then vertical)
+    over BuildSpec's keyword vertical. The keyword classifier misses businesses
+    described in unusual words ("handmade sourdough loaves and pastries" scores
+    "unknown"), while the graph has already paid for an LLM classification.
+
+    Never use this for logic: the cart/reserve/seat choice, the commerce_copy
+    buckets and the fallback workflows stay on BuildSpec's deterministic
+    vertical and shape, so the backend-wired interaction stays predictable.
+    Falls back to BuildSpec's vertical when the graph produced no profile
+    (e.g. the planning graph crashed and the fallback plan was used).
+    """
+    profile = (agent_context or {}).get("business_profile") or {}
+    if isinstance(profile, dict):
+        for value in (profile.get("subtype"), profile.get("vertical")):
+            text = str(value or "").strip().replace("_", " ")
+            if text and text.lower() != "unknown":
+                return text
+    return str(business.get("business_type") or business.get("vertical") or "general")
+
+
 _ADMIN_SYSTEM_PROMPT = (
     "You are the code-generation engine inside LaunchFoundry, a website builder for small businesses. "
     "The person you are working for is the signed-in owner of the business described in each request; the "
@@ -535,7 +558,7 @@ class CodeGenerator:
         self,
         business_id: str,
         business_name: str,
-        vertical: str,
+        business_type: str,
         menu_items: list[dict[str, Any]],
     ) -> dict[str, Any] | None:
         """Uses real tool-calling to let the model define and seed a bespoke
@@ -601,7 +624,7 @@ class CodeGenerator:
 
         item_names = ", ".join(str(i.get("name", "")) for i in menu_items[:6] if i.get("name")) or "no specific items given"
         prompt = (
-            f"You're setting up the real backend data for {business_name}, a {vertical} business that sells "
+            f"You're setting up the real backend data for {business_name}, a {business_type} business that sells"
             f"tickets/seats to showings or events.\n"
             f"Real items/products already on file: {item_names}.\n"
             f"First call create_entity_type to name the kind of bookable thing this business has (e.g. 'showtime'). "
@@ -713,7 +736,7 @@ class CodeGenerator:
         item_lines = "\n".join(f'  - {i.get("name","")} - {i.get("priceLabel","")}' for i in menu_items)
 
         prompt = f"""Write the front-end for the owner's back-office dashboard of a small business website,
-{name} (a {vertical} business, goal: {goal or 'no stated goal'}). The owner uses this page to see and manage
+{name} (a {_describe_business_type(business)} business, goal: {goal or 'no stated goal'}). The owner uses this page to see and manage
 the enquiries, orders, or bookings their own site receives.
 
 Data access is already handled for you: the page has a global `window.LF` client object (provided by the
@@ -813,6 +836,7 @@ no code fences, no explanation before or after."""
         goal = business.get("goal", "")
         business_id = business.get("id", "")
         ctx = agent_context or {}
+        business_type = _describe_business_type(business, ctx)
         requirements_spec = ctx.get("requirements_spec") or {}
         design_spec = ctx.get("design_spec") or {}
         visual_system = design_spec.get("visual_system") or {}
@@ -866,7 +890,7 @@ no code fences, no explanation before or after."""
         # movie ticket flow came out looking like a t-shirt store.
         needs_seat_selection = needs_cart and commerce_key == "ticketed_event"
         custom_backend = (
-            self._provision_custom_backend(business_id, name, vertical, menu_items)
+            self._provision_custom_backend(business_id, name, business_type, menu_items)
             if needs_seat_selection and business_id else None
         )
         loc_low = location.lower()
@@ -897,7 +921,7 @@ no code fences, no explanation before or after."""
 
         wf_lines = [
             f'- "{ws["title"]}" — decide which fields visitors need to submit for this specific request type on '
-            f'this {vertical} business (not a generic name/phone/email form) — think about what information you\'d '
+            f'this {business_type} business (not a generic name/phone/email form) — think about what information you\'d '
             f'actually need to act on it. Write intro copy specific to this business explaining why they would use '
             f'it. On submit, fire the integration hook below with type="{ws["type"]}", then show a friendly '
             f'confirmation in place of the form.'
@@ -1184,7 +1208,7 @@ It must NOT look like a generic template, a spec sheet, or an admin form. That b
 how ordinary this business type sounds — an "ordinary" business still deserves a genuinely well-designed site.
 
 ═══ BUSINESS ═══
-Name: {name} | Type: {vertical} | Location: {location}
+Name: {name} | Type: {business_type} | Location: {location}
 Goal: {goal}
 USP: {usp}
 Hours: {hours} | Phone: {phone}
@@ -1458,6 +1482,10 @@ Design mood for this business: "{mood}" — {mood_desc}.
 
         business = build_spec.get("business", {})
         vertical = business.get("vertical", "restaurant")
+        # Descriptive label for the prompts (page, dashboard, custom backend);
+        # stored on the business so revisions see it too. Logic below keeps
+        # using BuildSpec's `vertical` -- see _describe_business_type.
+        business["business_type"] = _describe_business_type(business, agent_context)
         context_design_spec = (
             (agent_context or {}).get("design_spec")
             or {}

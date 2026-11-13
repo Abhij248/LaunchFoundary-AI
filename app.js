@@ -4692,6 +4692,10 @@ async function runCodeGenerationStep() {
     const code = await postJSON("/generate-code", {
       buildSpec: { ...state.spec, menuItems },
       agentContext: {
+        // The graph's LLM classification of the business. Only used as the
+        // descriptive business type in generation prompts; the cart/reserve/
+        // seat choice stays on BuildSpec (see _describe_business_type).
+        business_profile: finalState.business_profile || null,
         requirements_spec: finalState.requirements_spec || null,
         design_spec: finalState.design_spec || null,
         reasoning_notes: finalState.reasoning_notes || [],
